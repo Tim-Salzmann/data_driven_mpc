@@ -99,7 +99,7 @@ class GPMPCWrapper:
                 pre_trained_models = load_pickled_models(model_options=load_options)
             else:
                 import torch
-                import deep_casadi.torch as dc
+                import ml_casadi.torch as dc
                 from src.model_fitting.mlp_common import NormalizedMLP
                 directory, file_name = get_model_dir_and_file(load_options)
                 saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))

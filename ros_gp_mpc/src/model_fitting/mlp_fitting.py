@@ -20,7 +20,7 @@ import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
-import deep_casadi.torch as dc
+import ml_casadi.torch as mc
 
 from tqdm import tqdm
 
@@ -89,7 +89,7 @@ def main(x_features, u_features, reg_y_dims, quad_sim_options, dataset_name,
     dataset_train = GPToMLPDataset(gp_dataset_train)
     x_mean, x_std, y_mean, y_std = dataset_train.stats()
     data_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=0)
-    mlp_model = dc.nn.MultiLayerPerceptron(len(x_features), hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
+    mlp_model = mc.nn.MultiLayerPerceptron(len(x_features), hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
     model = NormalizedMLP(mlp_model, torch.tensor(x_mean).float(), torch.tensor(x_std).float(),
                           torch.tensor(y_mean).float(), torch.tensor(y_std).float())
 

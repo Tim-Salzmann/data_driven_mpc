@@ -15,7 +15,7 @@ import time
 import argparse
 import numpy as np
 import torch
-import deep_casadi.torch as dc
+import ml_casadi.torch as mc
 
 from config.configuration_parameters import SimpleSimConfig
 from src.model_fitting.mlp_common import NormalizedMLP
@@ -84,8 +84,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
         elif reg_type == "mlp":
             directory, file_name = get_model_dir_and_file(load_ops)
             saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
-            mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
-                                           saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+            mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                                   saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
             model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                   torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                   torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
@@ -98,8 +98,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
         elif reg_type == "mlp_approx":
             directory, file_name = get_model_dir_and_file(load_ops)
             saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
-            mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
-                                           saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+            mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                                   saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
             model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                   torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                   torch.tensor(np.zeros((saved_dict['output_size'],))).float(),

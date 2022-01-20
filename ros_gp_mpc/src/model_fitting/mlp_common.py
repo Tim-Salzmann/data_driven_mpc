@@ -1,5 +1,5 @@
 from torch.utils.data import Dataset
-import deep_casadi.torch as dc
+import ml_casadi.torch as mc
 
 
 class GPToMLPDataset(Dataset):
@@ -18,7 +18,7 @@ class GPToMLPDataset(Dataset):
         return self.x[item], self.y[item]
 
 
-class NormalizedMLP(dc.TorchDeepCasadiModule):
+class NormalizedMLP(mc.TorchMLCasadiModule):
     def __init__(self, model, x_mean, x_std, y_mean, y_std):
         super().__init__()
         self.model = model
