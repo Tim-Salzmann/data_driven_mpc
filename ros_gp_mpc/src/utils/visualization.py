@@ -608,6 +608,7 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     plt.ylabel('Mean MPC loop time (s)', fontsize=font_size)
     plt.xlabel('Max vel [m/s]', fontsize=font_size)
 
+    tikzplotlib.save(img_save_dir + "t_opt.tex")
     fig.savefig(img_save_dir + 't_opt', dpi=None, facecolor='w', edgecolor='w',
                 orientation='portrait', papertype=None, format=None,
                 transparent=False, bbox_inches=None, pad_inches=0.1,
@@ -621,7 +622,7 @@ def load_past_experiments():
     try:
         with open(metadata_file) as json_file:
             metadata = json.load(json_file)
-    except FileNotFoundError:
+    except:
         metadata = None
 
     mse = np.load(mse_file)

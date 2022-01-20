@@ -174,7 +174,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_name", type=str, default="",
                         help="Name of the regression model within the specified <model_version> folder.")
 
-    parser.add_argument("--model_type", type=str, default="gp", choices=["gp", "rdrv"],
+    parser.add_argument("--model_type", type=str, default="gp", choices=["gp", "mlp", "mlp_approx", "rdrv"],
                         help="Type of regression model (GP or RDRv linear)")
 
     parser.add_argument("--trajectory", type=str, default="loop", choices=["loop", "lemniscate"],

@@ -53,7 +53,8 @@ def safe_mknode_recursive(destiny_dir, node_name, overwrite):
     if overwrite and os.path.exists(os.path.join(destiny_dir, node_name)):
         os.remove(os.path.join(destiny_dir, node_name))
     if not os.path.exists(os.path.join(destiny_dir, node_name)):
-        os.mknod(os.path.join(destiny_dir, node_name))
+        open(os.path.join(destiny_dir, node_name), 'w').close()
+        #os.mknod(os.path.join(destiny_dir, node_name))
         return False
     return True
 
@@ -215,6 +216,20 @@ def load_pickled_models(directory='', file_name='', model_options=None):
     try:
         for file in pickled_files:
             if not file.startswith(file_name) and file != 'feats.csv':
+                continue
+            if '.pt' in file:
+                directory, file_name = get_model_dir_and_file(load_ops)
+                saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
+                mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                               saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+                model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['output_size'],))).float())
+                model.load_state_dict(saved_dict['state_dict'])
+                model.eval()
+                pre_trained_models = model
+                loaded_models.append(joblib.load(os.path.join(directory, file)))
                 continue
             if '.pkl' not in file and '.csv' not in file:
                 continue

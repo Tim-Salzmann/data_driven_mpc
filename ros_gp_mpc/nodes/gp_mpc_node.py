@@ -13,6 +13,7 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 """
 
 import json
+import os
 import time
 import rospy
 import threading
@@ -23,11 +24,11 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Empty
 from geometry_msgs.msg import PoseStamped
 from ros_gp_mpc.msg import ReferenceTrajectory
-from quadrotor_msgs.msg import ControlCommand
+from agiros_msgs.msg import Command, QuadState
 from src.quad_mpc.create_ros_gp_mpc import ROSGPMPC
 from gazebo_msgs.srv import GetPhysicsProperties
 from src.utils.utils import jsonify, interpol_mse, quaternion_state_mse, load_pickled_models, v_dot_q, \
-    separate_variables
+    separate_variables, get_model_dir_and_file
 from src.utils.visualization import trajectory_tracking_results, mse_tracking_experiment_plot, \
     load_past_experiments, get_experiment_files
 from src.experiments.point_tracking_and_record import make_record_dict, get_record_file_and_dir, check_out_data
@@ -92,18 +93,35 @@ class GPMPCWrapper:
 
         # Load trained GP model
         if load_options is not None:
-            rospy.loginfo("Attempting to load GP model from:\n   git: {}\n   name: {}\n   meta: {}".format(
-                load_options["git"], load_options["model_name"], load_options["params"]))
-            pre_trained_models = load_pickled_models(model_options=load_options)
+            if load_options['model_type'] == 'gp':
+                rospy.loginfo("Attempting to load GP model from:\n   git: {}\n   name: {}\n   meta: {}".format(
+                    load_options["git"], load_options["model_name"], load_options["params"]))
+                pre_trained_models = load_pickled_models(model_options=load_options)
+            else:
+                import torch
+                import deep_casadi.torch as dc
+                from src.model_fitting.mlp_common import NormalizedMLP
+                directory, file_name = get_model_dir_and_file(load_options)
+                saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
+                mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                               saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+                model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
+                                      torch.tensor(np.zeros((saved_dict['output_size'],))).float())
+                model.load_state_dict(saved_dict['state_dict'])
+                model.eval()
+                pre_trained_models = model
             if pre_trained_models is None:
                 rospy.logwarn("Model parameters specified did not match with any pre-trained GP")
+            self.model_name = load_options['model_type']
         else:
             pre_trained_models = None
         self.pre_trained_models = pre_trained_models
         self.git_v = load_options["git"]
         if self.pre_trained_models is not None:
             rospy.loginfo("Successfully loaded GP model")
-            self.model_name = load_options["model_name"]
+            self.model_name = load_options["model_name"] + self.model_name
         elif rdrv is not None:
             self.model_name = "rdrv"
         else:
@@ -111,7 +129,8 @@ class GPMPCWrapper:
 
         # Initialize GP MPC for point tracking
         self.gp_mpc = ROSGPMPC(self.t_horizon, self.n_mpc_nodes, self.opt_dt, quad_name=quad_name,
-                               point_reference=False, gp_models=pre_trained_models, rdrv=rdrv)
+                               model_name=self.model_name, point_reference=False, gp_models=pre_trained_models,
+                               rdrv=rdrv)
 
         # Last state obtained from odometry
         self.x = None
@@ -214,7 +233,10 @@ class GPMPCWrapper:
         # which environment is being used
         ekf_odom_topic = None
         if self.environment == "gazebo":
-            odom_topic = "/" + quad_name + "/ground_truth/odometry"
+            odom_topic = "/" + quad_name + "/agiros_pilot/odometry"
+            raw_topic = None
+        elif self.environment == "agisim":
+            odom_topic = "/" + quad_name + "/agiros_pilot/odometry"
             raw_topic = None
         elif self.environment == "arena":
             # Assume arena world setup
@@ -229,19 +251,24 @@ class GPMPCWrapper:
             if use_ekf:
                 ekf_odom_topic = "/" + quad_name + "/state_estimate_ekf"
 
-        land_topic = "/" + quad_name + "/autopilot/land"
-        control_topic = "/" + quad_name + "/autopilot/control_command_input"
-        off_topic = "/" + quad_name + "/autopilot/off"
+        land_topic = "/" + quad_name + "/agiros_pilot/land"
+        control_topic = "/" + quad_name + "/agiros_pilot/feedthrough_command"
+        off_topic = "/" + quad_name + "/agiros_pilot/off"
 
         reference_topic = "reference"
         status_topic = "busy"
 
         # Publishers
-        self.control_pub = rospy.Publisher(control_topic, ControlCommand, queue_size=1, tcp_nodelay=True)
+        self.control_pub = rospy.Publisher(control_topic, Command, queue_size=1, tcp_nodelay=True)
         self.status_pub = rospy.Publisher(status_topic, Bool, queue_size=1)
         self.off_pub = rospy.Publisher(off_topic, Empty, queue_size=1)
 
         # Subscribers
+        self.last_state_msg = None
+        self.delete_next_trigger = False
+        self.delete_next = False
+        self.skip_next2 = False
+        self.state_sub = rospy.Subscriber("/" + quad_name + "/agiros_pilot/state", QuadState, self.state_callback)
         self.land_sub = rospy.Subscriber(land_topic, Empty, self.land_callback)
         self.ref_sub = rospy.Subscriber(reference_topic, ReferenceTrajectory, self.reference_callback)
         if ekf_odom_topic:
@@ -263,6 +290,9 @@ class GPMPCWrapper:
             msg.data = not (self.x_ref is None and self.odom_available)
             self.status_pub.publish(msg)
             rate.sleep()
+
+    def state_callback(self, msg):
+        self.last_state_msg = msg
 
     def land_callback(self, _):
         """
@@ -304,6 +334,15 @@ class GPMPCWrapper:
             self.optimization_dt += time.time() - tic
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             self.control_pub.publish(next_control)
+            if self.delete_next_trigger:
+                self.delete_next_trigger = False
+                self.delete_next = True
+            delay = ((rospy.Time.now() - odom.header.stamp).nsecs) * 1e-6
+            #delay = (time.time() - tic) * 1000
+            if delay > 4:
+                print(f'Deleting {delay}')
+                self.delete_next_trigger = True
+
             if self.x_initial_reached and self.current_idx < self.w_control.shape[0]:
                 self.w_control[self.current_idx, 0] = next_control.bodyrates.x
                 self.w_control[self.current_idx, 1] = next_control.bodyrates.y
@@ -316,11 +355,22 @@ class GPMPCWrapper:
             return
 
         if w_opt is not None:
-
             # Check out final states. self.recording_warmup can only be true in recording mode.
-            if not self.recording_warmup and recording and self.x_initial_reached:
+            if not self.recording_warmup and recording and self.x_initial_reached and not self.delete_next:
+                #print(w_opt[0] * 8.5)
                 x_out = np.array(self.x)[np.newaxis, :]
+                #print('W')
+                #print(self.last_state_msg.motor_speeds[0]**2 * self.gp_mpc.quad.c)
+                #print(self.w_opt[0] * 8.5)
+                #assert self.last_state_msg.thrusts[0] == self.w_opt[0] * 8.5
                 self.rec_dict = check_out_data(self.rec_dict, x_out, None, self.w_opt, dt)
+            elif not self.recording_warmup and recording and self.x_initial_reached and self.delete_next:
+                self.rec_dict['state_in'] = self.rec_dict['state_in'][:-1]
+                self.rec_dict['timestamp'] = self.rec_dict['timestamp'][:-1]
+                self.rec_dict['state_ref'] = self.rec_dict['state_ref'][:-1]
+                print(self.rec_dict['state_in'].shape)
+                print(self.rec_dict['state_out'].shape)
+            self.delete_next = False
 
             self.w_opt = w_opt
             if self.x_initial_reached and self.current_idx < self.quad_controls.shape[0]:
@@ -407,19 +457,14 @@ class GPMPCWrapper:
         :param msg: message from subscriber.
         :type msg: Odometry
         """
-
+        d = ((rospy.Time.now() - msg.header.stamp).nsecs) * 1e-6
+        #print(f'Odom delay: {d}')
+        #assert (rospy.Time.now().nsecs - msg.header.stamp.nsecs) * 1e-6 <= 0
         if self.controller_off:
             return
-
         p, q, v, w = odometry_parse(msg)
 
-        # Change velocity to world frame if in gazebo environment
-        if self.environment == "gazebo":
-            v_w = v_dot_q(np.array(v), np.array(q)).tolist()
-        else:
-            v_w = v
-
-        self.x = p + q + v_w + w
+        self.x = p + q + v + w
 
         try:
             # Update the state estimate of the quad
@@ -539,7 +584,7 @@ class GPMPCWrapper:
             x_ref[0][2] = min(0.1, self.x[2] + dz) if dz > 0 else max(0.1, self.x[2] + dz)
 
             # Check if z position is close to target.
-            if abs(self.x[2] - 0.1) < 0.05:
+            if abs(self.x[2] - 0.1) < 0.1:
 
                 executed_x_ref = self.x_ref
                 executed_u_ref = self.u_ref
@@ -673,7 +718,7 @@ class GPMPCWrapper:
 
         # End of reference reached
         elif self.current_idx == self.x_ref.shape[0]:
-
+            rospy.loginfo("Finished trajectory - Landing.")
             # Add one to the completed trajectory counter
             self.run_traj_counter += 1
 
@@ -792,12 +837,14 @@ def main():
         load_options["git"] = git_id
     if model_name is not None:
         load_options["model_name"] = str(model_name)
+    if model_type is not None:
+        load_options["model_type"] = str(model_type)
 
     plot = True
     plot = rospy.get_param('~plot', default=None) if rospy.get_param('~plot', default=None) is not None else plot
 
     env = rospy.get_param('~environment', default='gazebo')
-    default_quad = "hummingbird" if env == "gazebo" else "colibri"
+    default_quad = "hummingbird" if env == "gazebo" else "kingfisher" #"colibri"
     load_options["params"] = {env: "default"}
 
     if model_type == "rdrv":
@@ -807,10 +854,12 @@ def main():
 
     quad_name = rospy.get_param('~quad_name', default=None)
     quad_name = quad_name if quad_name is not None else default_quad
-
     # Change if needed. This is currently the supported combination.
     if env == "gazebo":
         assert quad_name == "hummingbird"
+        ekf_sync = False
+    elif env == "agisim":
+        assert quad_name == "kingfisher"
         ekf_sync = False
     else:
         assert quad_name == "colibri"

@@ -24,7 +24,7 @@ import os
 import yaml
 import json
 
-import rospy
+#import rospy
 
 
 def check_trajectory(trajectory, inputs, tvec, plot=False):

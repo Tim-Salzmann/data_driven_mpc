@@ -327,6 +327,9 @@ if __name__ == '__main__':
     parser.add_argument("--dataset_name", type=str, default="simplified_sim_dataset",
                         help="Name for the generated dataset.")
 
+    parser.add_argument("--training_split", type=bool, default=True,
+                        help="If the data set is the training or test split.")
+
     parser.add_argument("--simulation_time", type=float, default=300,
                         help="Total duration of the simulation in seconds.")
 
@@ -349,7 +352,7 @@ if __name__ == '__main__':
         "recording_options": {
             "recording": args.recording,
             "dataset_name": args.dataset_name,
-            "training_split": True,
+            "training_split": args.training_split,
         },
         "simulation_options": SimpleSimConfig.simulation_disturbances,
         "parameters": {

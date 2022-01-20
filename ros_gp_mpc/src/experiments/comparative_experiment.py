@@ -10,16 +10,19 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
-
+import os.path
 import time
 import argparse
 import numpy as np
+import torch
+import deep_casadi.torch as dc
 
 from config.configuration_parameters import SimpleSimConfig
+from src.model_fitting.mlp_common import NormalizedMLP
 from src.quad_mpc.quad_3d_mpc import Quad3DMPC
 from src.quad_mpc.quad_3d import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
-from src.utils.utils import load_pickled_models, interpol_mse, separate_variables
+from src.utils.utils import load_pickled_models, interpol_mse, separate_variables, get_model_dir_and_file
 from src.utils.visualization import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
     get_experiment_files
 from src.utils.visualization import mse_tracking_experiment_plot
@@ -66,6 +69,7 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
 
     # Quadrotor simulator
     my_quad = Quadrotor3D(**simulation_options)
+    model_name = quad_name
 
     if version is not None and name is not None:
 
@@ -77,6 +81,35 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
             pre_trained_models = load_pickled_models(model_options=load_ops)
             rdrv_d = None
 
+        elif reg_type == "mlp":
+            directory, file_name = get_model_dir_and_file(load_ops)
+            saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
+            mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                           saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+            model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float())
+            model.load_state_dict(saved_dict['state_dict'])
+            model.eval()
+            pre_trained_models = model
+            rdrv_d = None
+
+        elif reg_type == "mlp_approx":
+            directory, file_name = get_model_dir_and_file(load_ops)
+            saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
+            mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                           saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+            model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
+                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float())
+            model.load_state_dict(saved_dict['state_dict'])
+            model.eval()
+            pre_trained_models = model
+            rdrv_d = None
+            model_name = 'approx'
+
         else:
             rdrv_d = load_rdrv(model_options=load_ops)
             pre_trained_models = None
@@ -84,14 +117,14 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     else:
         pre_trained_models = rdrv_d = None
 
-    if quad_name is None:
-        quad_name = "my_quad_" + str(globals()['model_num'])
+    if model_name is None:
+        model_name = "my_quad_" + str(globals()['model_num'])
         globals()['model_num'] += 1
 
     # Initialize quad MPC
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
                          q_cost=q_diagonal, r_cost=r_diagonal, n_nodes=n_mpc_nodes,
-                         pre_trained_models=pre_trained_models, model_name=quad_name, q_mask=q_mask, rdrv_d_mat=rdrv_d)
+                         pre_trained_models=pre_trained_models, model_name=model_name, q_mask=q_mask, rdrv_d_mat=rdrv_d)
 
     return quad_mpc
 
@@ -235,7 +268,10 @@ if __name__ == '__main__':
 
     parser.add_argument("--fast", dest="fast", action="store_true",
                         help="Set to True to run a fast experiment with less velocity samples.")
-    parser.set_defaults(fast=False)
+
+    parser.add_argument("--print_results", dest="print_results", action="store_true",
+                        help="Print the results data frame.")
+    parser.set_defaults(print_results=False)
 
     input_arguments = parser.parse_args()
 
@@ -308,4 +344,20 @@ if __name__ == '__main__':
     # from src.utils.visualization import load_past_experiments
     # _, mse, v_max, t_opt = load_past_experiments()
 
-    mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=26)
+    mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=12)
+
+    if input_arguments.print_results:
+        import pandas as pd
+        pd.options.display.float_format = "{:,.2f}".format
+        track_dfs = []
+        for i, track in enumerate(traj_type_labels):
+            index = pd.MultiIndex.from_arrays([[track]*len(av_speed_vec[i]), av_speed_vec[i], v_max[i]],
+                                              names=['Track', 'v_avg', 'v_max'])
+            track_df = pd.DataFrame(mse[i].T*1000, columns=index, index=legends)
+            track_dfs.append(track_df)
+        track_dfs = pd.concat(track_dfs, axis=1)
+        print(track_dfs.to_string())
+
+        pd.options.display.float_format = "{:,.3f}".format
+        t_df = pd.DataFrame(np.mean(np.mean(t_opt, axis=0), axis=0)*1000, columns=['avg'], index=legends)
+        print(t_df.to_string())

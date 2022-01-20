@@ -16,7 +16,7 @@ from src.quad_mpc.quad_3d import Quadrotor3D
 from src.quad_mpc.quad_3d_mpc import Quad3DMPC
 import numpy as np
 import std_msgs.msg
-from quadrotor_msgs.msg import ControlCommand
+from agiros_msgs.msg import Command
 import rospy
 import os
 
@@ -36,15 +36,18 @@ def custom_quad_param_loader(quad_name):
                        float(attrib['body_inertia'][0]['izz'])])
     quad.length = float(attrib['arm_length'])
 
-    quad.max_thrust = float(attrib["max_rot_velocity"]) ** 2 * float(attrib["motor_constant"])
+    if 'max_thrust' in attrib:
+        quad.max_thrust = 8.5
+    else:
+        float(attrib["max_rot_velocity"]) ** 2 * float(attrib["motor_constant"])
     quad.c = float(attrib['moment_constant'])
 
     # x configuration
     if quad_name != "hummingbird":
         h = np.cos(np.pi / 4) * quad.length
         quad.x_f = np.array([h, -h, -h, h])
-        quad.y_f = np.array([-h, -h, h, h])
-        quad.z_l_tau = np.array([-quad.c, quad.c, -quad.c, quad.c])
+        quad.y_f = np.array([-h, h, -h, h])
+        quad.z_l_tau = np.array([-quad.c, -quad.c, quad.c, quad.c])
 
     # + configuration
     else:
@@ -56,7 +59,7 @@ def custom_quad_param_loader(quad_name):
 
 
 class ROSGPMPC:
-    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, gp_models=None, rdrv=None):
+    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, gp_models=None, rdrv=None, model_name=None):
 
         quad = custom_quad_param_loader(quad_name)
 
@@ -77,8 +80,11 @@ class ROSGPMPC:
 
         q_mask = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]).T
 
+        if model_name is None:
+            model_name = quad_name
+
         quad_mpc = Quad3DMPC(quad, t_horizon=t_horizon, optimization_dt=opt_dt, n_nodes=n_mpc_nodes,
-                             pre_trained_models=gp_models, model_name=quad_name, solver_options=acados_config,
+                             pre_trained_models=gp_models, model_name=model_name, solver_options=acados_config,
                              q_mask=q_mask, q_cost=q_diagonal, r_cost=r_diagonal, rdrv_d_mat=rdrv)
 
         self.quad_name = quad_name
@@ -108,7 +114,7 @@ class ROSGPMPC:
         self.quad.set_gp_state(x)
 
     def set_reference(self, x_ref, u_ref):
-        """
+        self.inputs_ = """
         Set a reference state for the optimizer.
         :param x_ref: list with 4 sub-components (position, angle quaternion, velocity, body rate). If these four
         are lists, then this means a single target point is used. If they are Nx3 and Nx4 (for quaternion) numpy arrays,
@@ -125,16 +131,15 @@ class ROSGPMPC:
         # Remember solution for next optimization
         self.last_w = self.quad_mpc.reshape_input_sequence(w_opt)
 
-        next_control = ControlCommand()
+        next_control = Command()
         next_control.header = std_msgs.msg.Header()
         next_control.header.stamp = rospy.Time.now()
-        next_control.control_mode = 2
-        next_control.armed = True
+        next_control.is_single_rotor_thrust = True
         next_control.collective_thrust = np.sum(w_opt[:4]) * self.quad.max_thrust / self.quad.mass
         next_control.bodyrates.x = x_opt[1, -3]
         next_control.bodyrates.y = x_opt[1, -2]
         next_control.bodyrates.z = x_opt[1, -1]
-        next_control.rotor_thrusts = w_opt[:4] * self.quad.max_thrust
+        next_control.thrusts = w_opt[:4] * self.quad.max_thrust
 
         # Something is off with the colibri
         if self.quad_name == "colibri":

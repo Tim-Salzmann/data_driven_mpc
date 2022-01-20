@@ -75,7 +75,7 @@ class Quadrotor3D:
         self.z_l_tau = np.array([-self.c, self.c, -self.c, self.c])
 
         # Gravity vector
-        self.g = np.array([[0], [0], [9.81]])  # m s^-2
+        self.g = np.array([[0], [0], [9.8066]])  # m s^-2
 
         # Actuation thrusts
         self.u_noiseless = np.array([0.0, 0.0, 0.0, 0.0])

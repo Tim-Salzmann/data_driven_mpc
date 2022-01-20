@@ -28,7 +28,7 @@ from src.utils.quad_3d_opt_utils import discretize_dynamics_and_cost
 class Quad3DOptimizer:
     def __init__(self, quad, t_horizon=1, n_nodes=20,
                  q_cost=None, r_cost=None, q_mask=None,
-                 B_x=None, gp_regressors=None, rdrv_d_mat=None,
+                 B_x=None, gp_regressors=None, mlp_regressor_approx=None, mlp_regressor=None, rdrv_d_mat=None,
                  model_name="quad_3d_acados_mpc", solver_options=None):
         """
         :param quad: quadrotor object
@@ -88,6 +88,11 @@ class Quad3DOptimizer:
         self.L = None
         self.target = None
 
+        self.mlp_regressor = None
+        self.mlp_regressor_approx = None
+        self.x_opt_acados = None
+        self.mlp_params = None
+
         # Check if GP ensemble has an homogeneous feature space (if actual Ensemble)
         if gp_regressors is not None and gp_regressors.homogeneous:
             self.gp_reg_ensemble = gp_regressors
@@ -102,6 +107,18 @@ class Quad3DOptimizer:
             self.B_x = np.squeeze(np.stack(self.B_x, axis=1))
             self.B_x = self.B_x[:, np.newaxis] if len(self.B_x.shape) == 1 else self.B_x
             self.B_z = gp_regressors.B_z
+        elif mlp_regressor_approx is not None:
+            self.gp_reg_ensemble = None
+            self.mlp_regressor = None
+            self.mlp_regressor_approx = mlp_regressor_approx
+            self.B_x = np.hstack(list(B_x.values()))
+
+            self.approx_order = 1
+        elif mlp_regressor is not None:
+            self.gp_reg_ensemble = None
+            self.mlp_regressor = mlp_regressor
+            self.mlp_regressor_approx = None
+            self.B_x = np.hstack(list(B_x.values()))
         else:
             self.gp_reg_ensemble = None
 
@@ -134,6 +151,8 @@ class Quad3DOptimizer:
 
         # Check if GP's have been loaded
         self.with_gp = self.gp_reg_ensemble is not None
+        self.with_mlp_approx = self.mlp_regressor_approx is not None
+        self.with_mlp = self.mlp_regressor is not None
 
         # Add one more weight to the rotation (use quaternion norm weighting in acados)
         q_diagonal = np.concatenate((q_cost[:3], np.mean(q_cost[3:6])[np.newaxis], q_cost[3:]))
@@ -325,6 +344,58 @@ class Quad3DOptimizer:
 
                 params = cs.vertcat(self.gp_x, self.trigger_var)
                 acados_models[i] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
+        elif self.mlp_regressor_approx is not None:
+            gp_x = self.gp_x * self.trigger_var + self.x * (1 - self.trigger_var)
+            #  Transform velocity to body frame
+            v_b = v_dot_q(gp_x[7:10], quaternion_inverse(gp_x[3:7]))
+            gp_x = cs.vertcat(gp_x[:7], v_b, gp_x[10:])
+
+            outs = self.mlp_regressor_approx.approx(v_b, order=self.approx_order, parallel=False)
+
+            # Unpack prediction outputs. Transform back to world reference frame
+            mlp_means = v_dot_q(outs, gp_x[3:7])
+
+            # Add GP mean prediction
+            dynamics_equations[0] = nominal + cs.mtimes(self.B_x, mlp_means)
+
+            x_ = self.x
+            dynamics_ = dynamics_equations[0]
+
+            # Add again the gp augmented dynamics for the GP state
+            dynamics_ = cs.vertcat(dynamics_)
+            dynamics_equations[0] = cs.vertcat(dynamics_equations[0])
+
+            i_name = model_name + "_domain_" + str(0)
+
+            params = cs.vertcat(self.gp_x, self.trigger_var,
+                                self.mlp_regressor_approx.sym_approx_params(order=self.approx_order, flat=True))
+            acados_models[0] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
+
+        elif self.mlp_regressor is not None:
+            gp_x = self.gp_x * self.trigger_var + self.x * (1 - self.trigger_var)
+            #  Transform velocity to body frame
+            v_b = v_dot_q(gp_x[7:10], quaternion_inverse(gp_x[3:7]))
+            gp_x = cs.vertcat(gp_x[:7], v_b, gp_x[10:])
+
+            outs = self.mlp_regressor(v_b)
+
+            # Unpack prediction outputs. Transform back to world reference frame
+            mlp_means = v_dot_q(outs, gp_x[3:7])
+
+            # Add GP mean prediction
+            dynamics_equations[0] = nominal + cs.mtimes(self.B_x, mlp_means)
+
+            x_ = self.x
+            dynamics_ = dynamics_equations[0]
+
+            # Add again the gp augmented dynamics for the GP state
+            dynamics_ = cs.vertcat(dynamics_)
+            dynamics_equations[0] = cs.vertcat(dynamics_equations[0])
+
+            i_name = model_name + "_domain_" + str(0)
+
+            params = cs.vertcat(self.gp_x, self.trigger_var)
+            acados_models[0] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
 
         else:
 
@@ -551,6 +622,36 @@ class Quad3DOptimizer:
             for j in range(1, self.N):
                 self.acados_ocp_solver[use_model].set(j, 'p', np.array([0.0] * (len(gp_state) + 1)))
 
+        if self.with_mlp_approx:
+            gp_state = gp_regression_state if gp_regression_state is not None else initial_state
+            if self.x_opt_acados is None:
+                if isinstance(self.target[0], list):
+                    self.x_opt_acados = np.expand_dims(np.concatenate([self.target[i] for i in range(len(self.target))]), 0)
+                    self.x_opt_acados = self.x_opt_acados.repeat(self.N, 0)
+                else:
+                    self.x_opt_acados = np.hstack(self.target)
+            state = np.vstack([np.array([initial_state]), self.x_opt_acados[1:]])
+            a_list = []
+            for i in range(state.shape[0]):
+                a_list.append(v_dot_q(np.array(state[i, 7:10]), quaternion_inverse(np.array(state[i, 3:7]))))
+            a = np.array(a_list)
+
+            mlp_params = self.mlp_regressor_approx.approx_params(a, order=self.approx_order, flat=True)
+            mlp_params = np.vstack([mlp_params, mlp_params[[-1]]])
+            self.acados_ocp_solver[use_model].set(0, 'p',
+                                                  np.hstack([np.array(gp_state + [1]), mlp_params[0]]))
+            for j in range(1, self.N):
+                self.acados_ocp_solver[use_model].set(j, 'p', np.hstack([np.array([0.0] * (len(gp_state) + 1)),
+                                                                         mlp_params[j]]))
+        if self.with_mlp:
+            if self.x_opt_acados is None:
+                self.x_opt_acados = np.hstack(self.target)
+
+            gp_state = gp_regression_state if gp_regression_state is not None else initial_state
+            self.acados_ocp_solver[use_model].set(0, 'p', np.hstack([np.array(gp_state + [1])]))
+            for j in range(1, self.N):
+                self.acados_ocp_solver[use_model].set(j, 'p', np.hstack([np.array([0.0] * (len(gp_state) + 1))]))
+
         # Solve OCP
         self.acados_ocp_solver[use_model].solve()
 
@@ -561,6 +662,8 @@ class Quad3DOptimizer:
         for i in range(self.N):
             w_opt_acados[i, :] = self.acados_ocp_solver[use_model].get(i, "u")
             x_opt_acados[i + 1, :] = self.acados_ocp_solver[use_model].get(i + 1, "x")
+
+        self.x_opt_acados = x_opt_acados.copy()
 
         w_opt_acados = np.reshape(w_opt_acados, (-1))
         return w_opt_acados if not return_x else (w_opt_acados, x_opt_acados)

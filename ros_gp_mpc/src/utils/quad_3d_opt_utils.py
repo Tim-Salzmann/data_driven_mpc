@@ -36,7 +36,7 @@ def discretize_dynamics_and_cost(t_horizon, n_points, m_steps_per_point, x, u, d
         # Select the list of cost functions
         cost_f = cost_f[ind * m_steps_per_point:(ind + 1) * m_steps_per_point]
     else:
-        cost_f = [cost_f]
+        cost_f = [cost_f] * m_steps_per_point
 
     # Fixed step Runge-Kutta 4 integrator
     dt = t_horizon / n_points / m_steps_per_point

@@ -13,6 +13,8 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 
 
 import numpy as np
+import torch
+
 from src.quad_mpc.quad_3d_optimizer import Quad3DOptimizer
 from src.model_fitting.gp_common import restore_gp_regressors
 from src.utils.quad_3d_opt_utils import simulate_plant, uncertainty_forward_propagation
@@ -58,8 +60,23 @@ class Quad3DMPC:
         self.n_nodes = n_nodes
         self.t_horizon = t_horizon
 
+        self.mlp = None
+        self.mlp_approx = None
+
         # Load augmented dynamics model with GP regressor
-        if pre_trained_models is not None:
+        if isinstance(pre_trained_models, torch.nn.Module):
+            self.gp_ensemble = None
+            self.B_x = {}
+            x_dims = len(my_quad.get_state(quaternion=True, stacked=True))
+            for y_dim in [7, 8, 9]:
+                self.B_x[y_dim] = make_bx_matrix(x_dims, [y_dim])
+            if 'approx' in model_name:
+                print('Using Approx!!')
+                self.mlp_approx = pre_trained_models
+            else:
+                self.mlp = pre_trained_models
+
+        elif pre_trained_models is not None:
             self.gp_ensemble = restore_gp_regressors(pre_trained_models)
             x_dims = len(my_quad.get_state(quaternion=True, stacked=True))
             self.B_x = {}
@@ -74,6 +91,7 @@ class Quad3DMPC:
         self.quad_opt = Quad3DOptimizer(my_quad, t_horizon=t_horizon, n_nodes=n_nodes,
                                         q_cost=q_cost, r_cost=r_cost,
                                         B_x=self.B_x, gp_regressors=self.gp_ensemble,
+                                        mlp_regressor=self.mlp, mlp_regressor_approx=self.mlp_approx,
                                         model_name=model_name, q_mask=q_mask,
                                         solver_options=solver_options, rdrv_d_mat=rdrv_d_mat)
 
@@ -192,7 +210,7 @@ class Quad3DMPC:
                                                discrete_dynamics_f=self.quad_opt.discretize_f_and_q,
                                                dynamics_jac_f=self.quad_opt.quad_xdot_jac,
                                                B_x=self.B_x, gp_regressors=gp_ensemble,
-                                               use_model=use_model)
+                                               use_model=use_model, m_integration_steps=1)
 
     @staticmethod
     def reshape_input_sequence(u_seq):
