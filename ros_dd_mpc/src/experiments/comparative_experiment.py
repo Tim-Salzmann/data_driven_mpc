@@ -71,6 +71,9 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     my_quad = Quadrotor3D(**simulation_options)
     model_name = quad_name
 
+    # Configuration for MLP Model
+    mlp_conf = None
+
     if version is not None and name is not None:
 
         load_ops = {"params": simulation_options}
@@ -81,7 +84,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
             pre_trained_models = load_pickled_models(model_options=load_ops)
             rdrv_d = None
 
-        elif reg_type == "mlp":
+        elif 'mlp' in reg_type:
+            mlp_conf = {'approximated': False, 'v_inp': True, 'u_inp': False, 'T_out': False}
             directory, file_name = get_model_dir_and_file(load_ops)
             saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
             mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
@@ -95,20 +99,13 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
             pre_trained_models = model
             rdrv_d = None
 
-        elif reg_type == "mlp_approx":
-            directory, file_name = get_model_dir_and_file(load_ops)
-            saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
-            mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
-                                                   saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
-            model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
-                                  torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
-                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
-                                  torch.tensor(np.zeros((saved_dict['output_size'],))).float())
-            model.load_state_dict(saved_dict['state_dict'])
-            model.eval()
-            pre_trained_models = model
-            rdrv_d = None
-            model_name = 'approx'
+            if reg_type.endswith('approx'):
+                mlp_conf['approximated'] = True
+                mlp_conf['approx_order'] = 1
+            if '_u' in reg_type:
+                mlp_conf['u_inp'] = True
+            if '_T' in reg_type:
+                mlp_conf['T_out'] = True
 
         else:
             rdrv_d = load_rdrv(model_options=load_ops)
@@ -124,7 +121,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     # Initialize quad MPC
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
                          q_cost=q_diagonal, r_cost=r_diagonal, n_nodes=n_mpc_nodes,
-                         pre_trained_models=pre_trained_models, model_name=model_name, q_mask=q_mask, rdrv_d_mat=rdrv_d)
+                         pre_trained_models=pre_trained_models, model_name=model_name, q_mask=q_mask, rdrv_d_mat=rdrv_d,
+                         model_conf=mlp_conf)
 
     return quad_mpc
 

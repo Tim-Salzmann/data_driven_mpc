@@ -8,3 +8,4 @@ c_generated_code/
 *.egg-info/
 dist/
 build/
+acados_models/

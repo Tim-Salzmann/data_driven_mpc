@@ -37,6 +37,13 @@ class Quadrotor3D:
 
         # Maximum thrust in Newtons of a thruster when rotating at maximum speed.
         self.max_thrust = 20
+        self.thrust_map = 1e-6
+
+        # Motor time constant
+        self.motor_tau = 0.
+
+        # Communication delay
+        self.comm_delay = 0.
 
         # System state space
         self.pos = np.zeros((3,))

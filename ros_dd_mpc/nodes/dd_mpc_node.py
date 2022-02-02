@@ -16,9 +16,11 @@ import json
 import os
 import time
 import rospy
+import rosbag
 import threading
 import numpy as np
 import pandas as pd
+import std_msgs.msg
 from tqdm import tqdm
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Empty
@@ -44,6 +46,15 @@ def odometry_parse(odom_msg):
 
     return p, q, v, w
 
+def state_parse(state_msg):
+    p = [state_msg.pose.position.x, state_msg.pose.position.y, state_msg.pose.position.z]
+    q = [state_msg.pose.orientation.w, state_msg.pose.orientation.x, state_msg.pose.orientation.y,
+         state_msg.pose.orientation.z]
+    v = [state_msg.velocity.linear.x, state_msg.velocity.linear.y, state_msg.velocity.linear.z]
+    w = [state_msg.velocity.angular.x, state_msg.velocity.angular.y, state_msg.velocity.angular.z]
+    omega = state_msg.motor_speeds
+    return p, q, v, w, omega
+
 
 def make_raw_optitrack_dict():
     rec_dict_raw = make_record_dict(state_dim=7)
@@ -53,6 +64,16 @@ def make_raw_optitrack_dict():
         if key not in ["state_in", "timestamp"]:
             rec_dict_raw.pop(key)
     return rec_dict_raw
+
+
+def make_state_record_dict(state_dim):
+    blank_state_recording_dict = {
+            "state_in": np.zeros((0, state_dim)),
+            "state_ref": np.zeros((0, state_dim)),
+            "input_in": np.zeros((0, 4)),
+            "timestamp": np.zeros((0, 1)),
+    }
+    return blank_state_recording_dict
 
 
 def odometry_skipped_warning(last_seq, current_seq, stage):
@@ -92,6 +113,7 @@ class GPMPCWrapper:
         self.opt_dt = self.t_horizon / (self.n_mpc_nodes * self.control_freq_factor)
 
         # Load trained GP model
+        mlp_conf = None
         if load_options is not None:
             if load_options['model_type'] == 'gp':
                 rospy.loginfo("Attempting to load GP model from:\n   git: {}\n   name: {}\n   meta: {}".format(
@@ -99,11 +121,11 @@ class GPMPCWrapper:
                 pre_trained_models = load_pickled_models(model_options=load_options)
             else:
                 import torch
-                import ml_casadi.torch as dc
+                import ml_casadi.torch as mc
                 from src.model_fitting.mlp_common import NormalizedMLP
                 directory, file_name = get_model_dir_and_file(load_options)
                 saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
-                mlp_model = dc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
                                                saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
                 model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                       torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
@@ -112,16 +134,24 @@ class GPMPCWrapper:
                 model.load_state_dict(saved_dict['state_dict'])
                 model.eval()
                 pre_trained_models = model
+
+                mlp_conf = {'approximated': False, 'v_inp': True, 'u_inp': False}
+                model_type = load_options['model_type']
+                print(model_type)
+                if model_type.endswith('approx'):
+                    mlp_conf['approximated'] = True
+                    mlp_conf['approx_order'] = 1
+                if '_u' in model_type:
+                    mlp_conf['u_inp'] = True
             if pre_trained_models is None:
                 rospy.logwarn("Model parameters specified did not match with any pre-trained GP")
-            self.model_name = load_options['model_type']
         else:
             pre_trained_models = None
         self.pre_trained_models = pre_trained_models
         self.git_v = load_options["git"]
         if self.pre_trained_models is not None:
             rospy.loginfo("Successfully loaded GP model")
-            self.model_name = load_options["model_name"] + self.model_name
+            self.model_name = load_options["model_name"]
         elif rdrv is not None:
             self.model_name = "rdrv"
         else:
@@ -129,7 +159,7 @@ class GPMPCWrapper:
 
         # Initialize GP MPC for point tracking
         self.gp_mpc = ROSGPMPC(self.t_horizon, self.n_mpc_nodes, self.opt_dt, quad_name=quad_name,
-                               model_name=self.model_name, point_reference=False, gp_models=pre_trained_models,
+                               model_conf=mlp_conf, point_reference=False, models=pre_trained_models,
                                rdrv=rdrv)
 
         # Last state obtained from odometry
@@ -205,6 +235,8 @@ class GPMPCWrapper:
             rec_dict, rec_file = get_record_file_and_dir(
                 blank_recording_dict, recording_options, simulation_setup=metadata, overwrite=overwrite)
 
+            state_rec_dict = make_state_record_dict(state_dim=13)
+
             # If flying with the optitrack system, also record raw optitrack estimates
             if self.environment == "flying_room" or self.environment == 'arena' and record_raw_optitrack:
                 rec_dict_raw = make_raw_optitrack_dict()
@@ -214,15 +246,25 @@ class GPMPCWrapper:
             else:
                 rec_dict_raw = rec_file_raw = None
 
+            if recording_options["record_raw_state_control"]:
+                record_raw_state_control = True
+                raw_state_control_bag = rosbag.Bag(os.path.splitext(rec_file)[0] + '.bag', 'w')
+
         else:
+            state_rec_dict = None
             record_raw_optitrack = False
             rec_dict = rec_file = None
             rec_dict_raw = rec_file_raw = None
+            record_raw_state_control = False
+            raw_state_control_bag = None
 
+        self.state_rec_dict = state_rec_dict
         self.rec_dict = rec_dict
         self.rec_file = rec_file
         self.rec_dict_raw = rec_dict_raw
         self.rec_file_raw = rec_file_raw
+        self.record_raw_state_control = record_raw_state_control
+        self.raw_state_control_bag = raw_state_control_bag
 
         self.landing = False
         self.override_land = False
@@ -264,10 +306,6 @@ class GPMPCWrapper:
         self.off_pub = rospy.Publisher(off_topic, Empty, queue_size=1)
 
         # Subscribers
-        self.last_state_msg = None
-        self.delete_next_trigger = False
-        self.delete_next = False
-        self.skip_next2 = False
         self.state_sub = rospy.Subscriber("/" + quad_name + "/agiros_pilot/state", QuadState, self.state_callback)
         self.land_sub = rospy.Subscriber(land_topic, Empty, self.land_callback)
         self.ref_sub = rospy.Subscriber(reference_topic, ReferenceTrajectory, self.reference_callback)
@@ -292,7 +330,27 @@ class GPMPCWrapper:
             rate.sleep()
 
     def state_callback(self, msg):
-        self.last_state_msg = msg
+        current_idx = self.current_idx
+        if self.recording_options["recording"] and not self.recording_warmup and self.x_initial_reached and current_idx < self.x_ref.shape[0]:
+            p, q, v, w, omega = state_parse(msg)
+            x = p + q + v + w
+            self.state_rec_dict['state_in'] = np.append(self.state_rec_dict["state_in"], np.array(x)[np.newaxis, :], 0)
+            self.state_rec_dict['input_in'] = np.append(self.state_rec_dict["input_in"], np.array(omega)[np.newaxis, :], 0)
+            self.state_rec_dict['timestamp'] = np.append(self.state_rec_dict["timestamp"], msg.header.stamp.to_time())
+            self.state_rec_dict["state_ref"] = np.append(self.state_rec_dict["state_ref"], self.x_ref[np.newaxis, current_idx, :], 0)
+
+    def create_command_msg(self, w_opt, x_opt):
+        next_control = Command()
+        next_control.header = std_msgs.msg.Header()
+        next_control.header.stamp = rospy.Time.now()
+        next_control.is_single_rotor_thrust = False
+        next_control.collective_thrust = np.sum(w_opt[:4]) * self.gp_mpc.quad.max_thrust / self.gp_mpc.quad.mass
+        next_control.bodyrates.x = x_opt[1, -3]
+        next_control.bodyrates.y = x_opt[1, -2]
+        next_control.bodyrates.z = x_opt[1, -1]
+        next_control.thrusts = w_opt[:4] * self.gp_mpc.quad.max_thrust
+
+        return next_control
 
     def land_callback(self, _):
         """
@@ -330,18 +388,11 @@ class GPMPCWrapper:
         # Run MPC and publish control
         try:
             tic = time.time()
-            next_control, w_opt = self.gp_mpc.optimize(model_data)
+            w_opt, x_opt = self.gp_mpc.optimize(model_data)
+            next_control = self.create_command_msg(w_opt, x_opt)
             self.optimization_dt += time.time() - tic
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             self.control_pub.publish(next_control)
-            if self.delete_next_trigger:
-                self.delete_next_trigger = False
-                self.delete_next = True
-            delay = ((rospy.Time.now() - odom.header.stamp).nsecs) * 1e-6
-            #delay = (time.time() - tic) * 1000
-            if delay > 4:
-                print(f'Deleting {delay}')
-                self.delete_next_trigger = True
 
             if self.x_initial_reached and self.current_idx < self.w_control.shape[0]:
                 self.w_control[self.current_idx, 0] = next_control.bodyrates.x
@@ -356,21 +407,11 @@ class GPMPCWrapper:
 
         if w_opt is not None:
             # Check out final states. self.recording_warmup can only be true in recording mode.
-            if not self.recording_warmup and recording and self.x_initial_reached and not self.delete_next:
-                #print(w_opt[0] * 8.5)
+            if not self.recording_warmup and recording and self.x_initial_reached:
                 x_out = np.array(self.x)[np.newaxis, :]
-                #print('W')
-                #print(self.last_state_msg.motor_speeds[0]**2 * self.gp_mpc.quad.c)
-                #print(self.w_opt[0] * 8.5)
-                #assert self.last_state_msg.thrusts[0] == self.w_opt[0] * 8.5
                 self.rec_dict = check_out_data(self.rec_dict, x_out, None, self.w_opt, dt)
-            elif not self.recording_warmup and recording and self.x_initial_reached and self.delete_next:
-                self.rec_dict['state_in'] = self.rec_dict['state_in'][:-1]
-                self.rec_dict['timestamp'] = self.rec_dict['timestamp'][:-1]
-                self.rec_dict['state_ref'] = self.rec_dict['state_ref'][:-1]
-                print(self.rec_dict['state_in'].shape)
-                print(self.rec_dict['state_out'].shape)
-            self.delete_next = False
+            if self.record_raw_state_control:
+                self.raw_state_control_bag.write('control', next_control)
 
             self.w_opt = w_opt
             if self.x_initial_reached and self.current_idx < self.quad_controls.shape[0]:
@@ -416,6 +457,8 @@ class GPMPCWrapper:
 
             self.landing = False
             rospy.loginfo("No more references will be received")
+            if self.raw_state_control_bag is not None:
+                self.raw_state_control_bag.close()
             return
 
         # Save reference name
@@ -457,9 +500,6 @@ class GPMPCWrapper:
         :param msg: message from subscriber.
         :type msg: Odometry
         """
-        d = ((rospy.Time.now() - msg.header.stamp).nsecs) * 1e-6
-        #print(f'Odom delay: {d}')
-        #assert (rospy.Time.now().nsecs - msg.header.stamp.nsecs) * 1e-6 <= 0
         if self.controller_off:
             return
         p, q, v, w = odometry_parse(msg)
@@ -483,6 +523,9 @@ class GPMPCWrapper:
 
         # If the above try passed then MPC is ready
         self.odom_available = True
+
+        if self.record_raw_state_control:
+            self.raw_state_control_bag.write('state', msg)
 
         # We only optimize once every two odometry messages
         if not self.optimize_next:
@@ -579,12 +622,12 @@ class GPMPCWrapper:
 
         # Check if landing mode
         if self.landing:
-            dz = np.sign(0.1 - self.x[2])
-            dz = dz * 0.1 if self.environment != "gazebo" else dz * 0.3
-            x_ref[0][2] = min(0.1, self.x[2] + dz) if dz > 0 else max(0.1, self.x[2] + dz)
-
+            dz = np.sign(0.05 - self.x[2])
+            dz = dz * 0.5
+            x_ref[0][2] = min(0.05, self.x[2] + dz) if dz > 0 else max(0.01, self.x[2] + dz)
+            u_ref = self.last_u_ref - 0.1
             # Check if z position is close to target.
-            if abs(self.x[2] - 0.1) < 0.1:
+            if abs(self.x[2] - 0.1) < 0.2:
 
                 executed_x_ref = self.x_ref
                 executed_u_ref = self.u_ref
@@ -672,6 +715,8 @@ class GPMPCWrapper:
 
         # Trajectory tracking mode. Check if target reached
         if quaternion_state_mse(np.array(self.x), self.x_ref[0, :], mask) < th and not self.x_initial_reached:
+            if self.record_raw_state_control:
+                self.raw_state_control_bag.write('recording_ctrl', std_msgs.msg.Bool(True))
             # Initial position of trajectory has been reached
             self.x_initial_reached = True
             self.odom_available = False
@@ -731,6 +776,8 @@ class GPMPCWrapper:
             # Stop recording
             self.x_initial_reached = False
             self.recording_warmup = True
+            if self.record_raw_state_control:
+                self.raw_state_control_bag.write('recording_ctrl', std_msgs.msg.Bool(False))
 
         self.last_x_ref = x_ref
         self.last_u_ref = u_ref
@@ -761,6 +808,27 @@ class GPMPCWrapper:
 
         # Compute predictions offline to avoid extra overhead while in trajectory tracking control
         rospy.loginfo("Filling in dataset and saving...")
+        # self.rec_dict = make_record_dict(state_dim=13)
+        # for i in tqdm(range(len(self.state_rec_dict['input_in'])-1)):
+        #     if np.alltrue(np.abs(self.state_rec_dict['input_in'][i] - self.state_rec_dict['input_in'][i+1]) < 10):
+        #     #if np.alltrue(self.state_rec_dict['input_in'][i] == self.state_rec_dict['input_in'][i+1]):
+        #         x_0 = self.state_rec_dict['state_in'][i]
+        #         x_f = self.state_rec_dict['state_in'][i+1]
+        #         omega_mean = np.stack([self.state_rec_dict['input_in'][i], self.state_rec_dict['input_in'][i+1]], axis=0).mean(axis=0)
+        #         u = omega_mean**2 * self.gp_mpc.quad.thrust_map[0] / self.gp_mpc.quad.max_thrust
+        #         dt = self.state_rec_dict['timestamp'][i+1] - self.state_rec_dict['timestamp'][i]
+        #         x_pred, _ = self.gp_mpc.quad_mpc.forward_prop(x_0, u, t_horizon=dt, use_gp=False)
+        #         x_pred = x_pred[-1, np.newaxis, :]
+        #
+        #         self.rec_dict['state_in'] = np.append(self.rec_dict['state_in'], x_0[np.newaxis, :], axis=0)
+        #         self.rec_dict['input_in'] = np.append(self.rec_dict['input_in'], u[np.newaxis, :], axis=0)
+        #         self.rec_dict['state_out'] = np.append(self.rec_dict['state_out'], x_f[np.newaxis, :], axis=0)
+        #         self.rec_dict['state_ref'] = np.append(self.rec_dict['state_ref'], self.state_rec_dict['state_ref'][i, np.newaxis], axis=0)
+        #         self.rec_dict['timestamp'] = np.append(self.rec_dict['timestamp'], self.state_rec_dict['timestamp'][i])
+        #         self.rec_dict['dt'] = np.append(self.rec_dict['dt'], dt)
+        #         self.rec_dict['state_pred'] = np.append(self.rec_dict['state_pred'], x_pred, axis=0)
+        #         self.rec_dict['error'] = np.append(self.rec_dict['error'], x_f - x_pred, axis=0)
+
         for i in tqdm(range(len(self.rec_dict['input_in']))):
             x_0 = self.rec_dict['state_in'][i]
             x_f = self.rec_dict['state_out'][i]
@@ -797,6 +865,7 @@ class GPMPCWrapper:
 
         # Reset recording dictionaries
         self.rec_dict = make_record_dict(x_dim)
+        self.state_rec_dict = make_state_record_dict(x_dim)
 
 
 def main():
@@ -808,13 +877,15 @@ def main():
         "dataset_name": "deleteme",
         "training_split": True,
         "overwrite": True,
-        "record_raw_optitrack": True
+        "record_raw_optitrack": True,
+        "record_raw_state_control": True,
     }
 
     dataset_name = rospy.get_param('~dataset_name', default=None)
     overwrite = rospy.get_param('~overwrite', default=None)
     training = rospy.get_param('~training_split', default=None)
     raw_optitrack = rospy.get_param('~record_raw_optitrack', default=None)
+    raw_state_control = rospy.get_param('~record_raw_state_control', default=None)
     if dataset_name is not None:
         recording_options["dataset_name"] = dataset_name
     if overwrite is not None:
@@ -823,6 +894,8 @@ def main():
         recording_options["training_split"] = training
     if raw_optitrack is not None:
         recording_options["record_raw_optitrack"] = raw_optitrack
+    if raw_state_control is not None:
+        recording_options["record_raw_state_control"] = raw_state_control
 
     # GP loading parameters
     load_options = {

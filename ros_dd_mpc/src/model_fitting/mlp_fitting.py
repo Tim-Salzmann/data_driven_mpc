@@ -89,7 +89,7 @@ def main(x_features, u_features, reg_y_dims, quad_sim_options, dataset_name,
     dataset_train = GPToMLPDataset(gp_dataset_train)
     x_mean, x_std, y_mean, y_std = dataset_train.stats()
     data_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=0)
-    mlp_model = mc.nn.MultiLayerPerceptron(len(x_features), hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
+    mlp_model = mc.nn.MultiLayerPerceptron(len(x_features) + len(u_features), hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
     model = NormalizedMLP(mlp_model, torch.tensor(x_mean).float(), torch.tensor(x_std).float(),
                           torch.tensor(y_mean).float(), torch.tensor(y_std).float())
 
@@ -143,7 +143,7 @@ def main(x_features, u_features, reg_y_dims, quad_sim_options, dataset_name,
 
     save_dict = {
         'state_dict': model.state_dict(),
-        'input_size': len(x_features),
+        'input_size': len(x_features) + len(u_features),
         'hidden_size': hidden_size,
         'output_size': len(reg_y_dims),
         'hidden_layers': hidden_layers
@@ -179,6 +179,9 @@ if __name__ == '__main__':
                         help='Regression X variables. Must be a list of integers between 0 and 12. Velocities xyz '
                              'correspond to indices 7, 8, 9.')
 
+    parser.add_argument('--u', action="store_true",
+                        help='Use the control as input to the model.')
+
     parser.add_argument("--y", nargs='+', type=int, default=[7],
                         help="Regression Y variable. Must be an integer between 0 and 12. Velocities xyz correspond to"
                              "indices 7, 8, 9.")
@@ -191,7 +194,10 @@ if __name__ == '__main__':
 
     # Use vx, vy, vz as input features
     x_feats = input_arguments.x
-    u_feats = []
+    if input_arguments.u:
+        u_feats = [0, 1, 2, 3]
+    else:
+        u_feats = []
 
     # Regression dimension
     y_regressed_dims = input_arguments.y

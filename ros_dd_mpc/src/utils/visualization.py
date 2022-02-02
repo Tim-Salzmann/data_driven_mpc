@@ -588,7 +588,10 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     img_save_dir = dir_path + '/../../results/images/'
     safe_mkdir_recursive(img_save_dir, overwrite=False)
 
-    tikzplotlib.save(img_save_dir + "mse.tex")
+    try:
+        tikzplotlib.save(img_save_dir + "mse.tex")
+    except:
+        pass
     fig.savefig(img_save_dir + 'mse', dpi=None, facecolor='w', edgecolor='w',
                 orientation='portrait', papertype=None, format=None,
                 transparent=False, bbox_inches=None, pad_inches=0.1,
@@ -608,7 +611,10 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     plt.ylabel('Mean MPC loop time (s)', fontsize=font_size)
     plt.xlabel('Max vel [m/s]', fontsize=font_size)
 
-    tikzplotlib.save(img_save_dir + "t_opt.tex")
+    try:
+        tikzplotlib.save(img_save_dir + "t_opt.tex")
+    except:
+        pass
     fig.savefig(img_save_dir + 't_opt', dpi=None, facecolor='w', edgecolor='w',
                 orientation='portrait', papertype=None, format=None,
                 transparent=False, bbox_inches=None, pad_inches=0.1,

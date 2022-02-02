@@ -11,55 +11,64 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
 
-from src.utils.utils import parse_xacro_file
 from src.quad_mpc.quad_3d import Quadrotor3D
 from src.quad_mpc.quad_3d_mpc import Quad3DMPC
 import numpy as np
-import std_msgs.msg
-from agiros_msgs.msg import Command
-import rospy
 import os
+import yaml
 
 
 def custom_quad_param_loader(quad_name):
 
     this_path = os.path.dirname(os.path.realpath(__file__))
-    params_file = os.path.join(this_path, '..', '..', 'config', quad_name + '.xacro')
+    params_file = os.path.join(this_path, '..', '..', 'config', quad_name + '.yaml')
 
     # Get parameters for drone
-    attrib = parse_xacro_file(params_file)
+    with open(params_file, "r") as stream:
+        attrib = yaml.safe_load(stream)
 
     quad = Quadrotor3D(noisy=False, drag=False, payload=False, motor_noise=False)
-    quad.mass = float(attrib['mass']) + float(attrib['mass_rotor']) * 4
-    quad.J = np.array([float(attrib['body_inertia'][0]['ixx']),
-                       float(attrib['body_inertia'][0]['iyy']),
-                       float(attrib['body_inertia'][0]['izz'])])
-    quad.length = float(attrib['arm_length'])
+    quad.mass = float(attrib['mass']) + (float(attrib['mass_rotor']) if 'mass_rotor' in attrib else 0) * 4
+    quad.J = np.array(attrib['inertia'])
 
-    if 'max_thrust' in attrib:
-        quad.max_thrust = 8.5
+    quad.thrust_map = attrib["thrust_map"]
+
+    if 'thrust_max' in attrib:
+        quad.max_thrust = attrib['thrust_max']
     else:
-        float(attrib["max_rot_velocity"]) ** 2 * float(attrib["motor_constant"])
-    quad.c = float(attrib['moment_constant'])
+        float(attrib["motor_omega_max"]) ** 2 * quad.thrust_map[0]
+    quad.c = float(attrib['kappa'])
 
-    # x configuration
-    if quad_name != "hummingbird":
+    if 'arm_length' in attrib and attrib['rotors_config'] == 'cross':
+        quad.length = float(attrib['arm_length'])
         h = np.cos(np.pi / 4) * quad.length
         quad.x_f = np.array([h, -h, -h, h])
         quad.y_f = np.array([-h, h, -h, h])
-        quad.z_l_tau = np.array([-quad.c, -quad.c, quad.c, quad.c])
-
-    # + configuration
+    elif 'arm_length' in attrib and attrib['rotors_config'] == 'plus':
+        quad.length = float(attrib['arm_length'])
+        quad.x_f = np.array([0, 0, -quad.length, quad.length])
+        quad.y_f = np.array([-quad.length, quad.length, 0, 0])
     else:
-        quad.x_f = np.array([quad.length, 0, -quad.length, 0])
-        quad.y_f = np.array([0, quad.length, 0, -quad.length])
-        quad.z_l_tau = -np.array([-quad.c, quad.c, -quad.c, quad.c])
+        tbm_fr = np.array(attrib['tbm_fr'])
+        tbm_bl = np.array(attrib['tbm_bl'])
+        tbm_br = np.array(attrib['tbm_br'])
+        tbm_fl = np.array(attrib['tbm_fl'])
+        quad.length = np.linalg.norm(tbm_fr)
+        quad.x_f = np.array([tbm_fr[0], tbm_bl[0], tbm_br[0], tbm_fl[0]])
+        quad.y_f = np.array([tbm_fr[1], tbm_bl[1], tbm_br[1], tbm_fl[1]])
+    quad.z_l_tau = np.array([-quad.c, -quad.c, quad.c, quad.c])
+
+    if 'motor_tau' in attrib:
+        quad.motor_tau = attrib['motor_tau']
+
+    if 'comm_delay' in attrib:
+        quad.comm_delay = attrib['comm_delay']
 
     return quad
 
 
-class ROSGPMPC:
-    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, gp_models=None, rdrv=None, model_name=None):
+class ROSDDMPC:
+    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, models=None, model_conf=None, rdrv=None):
 
         quad = custom_quad_param_loader(quad_name)
 
@@ -80,11 +89,9 @@ class ROSGPMPC:
 
         q_mask = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]).T
 
-        if model_name is None:
-            model_name = quad_name
-
         quad_mpc = Quad3DMPC(quad, t_horizon=t_horizon, optimization_dt=opt_dt, n_nodes=n_mpc_nodes,
-                             pre_trained_models=gp_models, model_name=model_name, solver_options=acados_config,
+                             pre_trained_models=models, model_conf=model_conf, model_name=quad_name,
+                             solver_options=acados_config,
                              q_mask=q_mask, q_cost=q_diagonal, r_cost=r_diagonal, rdrv_d_mat=rdrv)
 
         self.quad_name = quad_name
@@ -114,35 +121,16 @@ class ROSGPMPC:
         self.quad.set_gp_state(x)
 
     def set_reference(self, x_ref, u_ref):
-        self.inputs_ = """
+        """
         Set a reference state for the optimizer.
         :param x_ref: list with 4 sub-components (position, angle quaternion, velocity, body rate). If these four
         are lists, then this means a single target point is used. If they are Nx3 and Nx4 (for quaternion) numpy arrays,
         then they are interpreted as a sequence of N tracking points.
         :param u_ref: Optional target for the optimized control inputs
         """
-
         return self.quad_mpc.set_reference(x_reference=x_ref, u_reference=u_ref)
 
     def optimize(self, model_data):
-
         w_opt, x_opt = self.quad_mpc.optimize(use_model=model_data, return_x=True)
 
-        # Remember solution for next optimization
-        self.last_w = self.quad_mpc.reshape_input_sequence(w_opt)
-
-        next_control = Command()
-        next_control.header = std_msgs.msg.Header()
-        next_control.header.stamp = rospy.Time.now()
-        next_control.is_single_rotor_thrust = True
-        next_control.collective_thrust = np.sum(w_opt[:4]) * self.quad.max_thrust / self.quad.mass
-        next_control.bodyrates.x = x_opt[1, -3]
-        next_control.bodyrates.y = x_opt[1, -2]
-        next_control.bodyrates.z = x_opt[1, -1]
-        next_control.thrusts = w_opt[:4] * self.quad.max_thrust
-
-        # Something is off with the colibri
-        if self.quad_name == "colibri":
-            next_control.collective_thrust -= 1.8
-
-        return next_control, w_opt
+        return w_opt, x_opt

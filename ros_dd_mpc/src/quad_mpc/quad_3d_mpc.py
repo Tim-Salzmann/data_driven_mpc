@@ -24,7 +24,7 @@ from src.utils.utils import make_bx_matrix
 class Quad3DMPC:
     def __init__(self, my_quad, t_horizon=1.0, n_nodes=5, q_cost=None, r_cost=None,
                  optimization_dt=5e-2, simulation_dt=5e-4, pre_trained_models=None, model_name="my_quad", q_mask=None,
-                 solver_options=None, rdrv_d_mat=None):
+                 solver_options=None, rdrv_d_mat=None, model_conf=None):
         """
         :param my_quad: Quadrotor3D simulator object
         :type my_quad: Quadrotor3D
@@ -70,10 +70,6 @@ class Quad3DMPC:
             x_dims = len(my_quad.get_state(quaternion=True, stacked=True))
             for y_dim in [7, 8, 9]:
                 self.B_x[y_dim] = make_bx_matrix(x_dims, [y_dim])
-            if 'approx' in model_name:
-                print('Using Approx!!')
-                self.mlp_approx = pre_trained_models
-            else:
                 self.mlp = pre_trained_models
 
         elif pre_trained_models is not None:
@@ -91,7 +87,7 @@ class Quad3DMPC:
         self.quad_opt = Quad3DOptimizer(my_quad, t_horizon=t_horizon, n_nodes=n_nodes,
                                         q_cost=q_cost, r_cost=r_cost,
                                         B_x=self.B_x, gp_regressors=self.gp_ensemble,
-                                        mlp_regressor=self.mlp, mlp_regressor_approx=self.mlp_approx,
+                                        mlp_regressor=self.mlp, mlp_conf=model_conf,
                                         model_name=model_name, q_mask=q_mask,
                                         solver_options=solver_options, rdrv_d_mat=rdrv_d_mat)
 
