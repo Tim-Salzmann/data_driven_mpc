@@ -24,8 +24,6 @@ import os
 import yaml
 import json
 
-#import rospy
-
 
 def check_trajectory(trajectory, inputs, tvec, plot=False):
     """
@@ -125,7 +123,7 @@ def check_trajectory(trajectory, inputs, tvec, plot=False):
     return True
 
 
-def minimum_snap_trajectory_generator(traj_derivatives, yaw_derivatives, t_ref, quad, map_limits, plot):
+def minimum_snap_trajectory_generator(traj_derivatives, yaw_derivatives, t_ref, quad, map_limits, plot, adjust_pos=True):
     """
     Follows the Minimum Snap Trajectory paper to generate a full trajectory given the position reference and its
     derivatives, and the yaw trajectory and its derivatives.
@@ -255,23 +253,24 @@ def minimum_snap_trajectory_generator(traj_derivatives, yaw_derivatives, t_ref, 
     full_vel = traj_derivatives[1, :, :].T
     reference_traj = np.concatenate((full_pos, q, full_vel, rate), 1)
 
-    if map_limits is None:
-        # Locate starting point right at x=0 and y=0.
-        reference_traj[:, 0] -= reference_traj[0, 0]
-        reference_traj[:, 1] -= reference_traj[0, 1]
+    if adjust_pos:
+        if map_limits is None:
+            # Locate starting point right at x=0 and y=0.
+            reference_traj[:, 0] -= reference_traj[0, 0]
+            reference_traj[:, 1] -= reference_traj[0, 1]
 
-    else:
-        x_max_range = map_limits["x"][1] - map_limits["x"][0]
-        y_max_range = map_limits["y"][1] - map_limits["y"][0]
-        z_max_range = map_limits["z"][1] - map_limits["z"][0]
+        else:
+            x_max_range = map_limits["x"][1] - map_limits["x"][0]
+            y_max_range = map_limits["y"][1] - map_limits["y"][0]
+            z_max_range = map_limits["z"][1] - map_limits["z"][0]
 
-        x_center = x_max_range / 2 + map_limits["x"][0]
-        y_center = y_max_range / 2 + map_limits["y"][0]
-        z_center = z_max_range / 2 + map_limits["z"][0]
+            x_center = x_max_range / 2 + map_limits["x"][0]
+            y_center = y_max_range / 2 + map_limits["y"][0]
+            z_center = z_max_range / 2 + map_limits["z"][0]
 
-        # Center circle to center of map XY plane
-        reference_traj[:, :3] += np.array([x_center, y_center, 0])
-        reference_traj[:, 2] = z_center
+            # Center circle to center of map XY plane
+            reference_traj[:, :3] += np.array([x_center, y_center, 0])
+            reference_traj[:, 2] = z_center
 
     if plot:
         draw_poly(reference_traj, reference_u, t_ref)
@@ -283,6 +282,7 @@ def minimum_snap_trajectory_generator(traj_derivatives, yaw_derivatives, t_ref, 
 
 
 def load_map_limits_from_file(map_limits):
+    import rospy
     if map_limits is not None and map_limits != "None":
         config_path = DirectoryConfig.CONFIG_DIR
         params_file = os.path.join(config_path, map_limits + '.yaml')
@@ -318,6 +318,118 @@ def straight_trajectory(quad, discretization_dt, speed):
     traj, yaw, t_ref = get_full_traj(poly_pos_traj, target_dt=av_dt, int_dt=discretization_dt)
 
     reference_traj, t_ref, reference_u = minimum_snap_trajectory_generator(traj, yaw, t_ref, quad, None, False)
+    return reference_traj, t_ref, reference_u
+
+
+def flyover_trajectory_collect(quad, discretization_dt, seed, speed, flyover_box_name):
+    np.random.seed(seed)
+    flyover_box = load_map_limits_from_file(flyover_box_name)
+    box_x_len = flyover_box['x'][1] - flyover_box['x'][0]
+    box_y_len = flyover_box['y'][1] - flyover_box['y'][0]
+    box_z_len = flyover_box['z'][1] - flyover_box['z'][0]
+    box_center = np.array([flyover_box['x'][0] + box_x_len / 2, flyover_box['y'][0] + box_y_len / 2])
+    box_diag = (box_x_len ** 2 + box_y_len ** 2) ** 0.5
+
+    pos_traj = np.zeros((50, 3))
+
+    for i in range(0, 50, 5):
+        rand_direction = (np.random.rand(2) - 0.5) * 2
+        rand_direction = rand_direction / np.linalg.norm(rand_direction)
+        height_start = flyover_box['z'][0] + np.random.rand() * box_z_len
+        start_point = box_center + rand_direction * 0.6 * box_diag
+
+        direction = (box_center - start_point)
+        direction = direction / np.linalg.norm(direction)
+
+        height_flyover = flyover_box['z'][0] + np.random.rand() * box_z_len
+        flyover_point = box_center - direction * 0.25 * box_diag
+
+        height_flyover_center = 0.55
+        flyover_center_point = box_center
+
+        height_flyover2 = flyover_box['z'][0] + np.random.rand() * box_z_len
+        flyover_point2 = box_center + direction * 0.25 * box_diag
+
+        height_target = flyover_box['z'][0] + np.random.rand() * box_z_len
+        target_point = box_center + direction * 0.7 * box_diag
+
+
+        pos_traj[i, :2] = start_point
+        pos_traj[i, 2] = height_start
+        pos_traj[i + 1, :2] = flyover_point
+        pos_traj[i + 1, 2] = height_flyover
+        pos_traj[i + 2, :2] = flyover_center_point
+        pos_traj[i + 2, 2] = height_flyover_center
+        pos_traj[i + 3, :2] = flyover_point2
+        pos_traj[i + 3, 2] = height_flyover2
+        pos_traj[i + 4, :2] = target_point
+        pos_traj[i + 4, 2] = height_target
+
+
+
+    att_traj = np.zeros_like(pos_traj)
+
+    av_dist = np.mean(np.sqrt(np.sum(np.diff(pos_traj, axis=0) ** 2, axis=1)))
+    av_dt = av_dist / speed
+
+    poly_pos_traj = fit_multi_segment_polynomial_trajectory(pos_traj.T, att_traj[:, -1].T)
+    traj, yaw, t_ref = get_full_traj(poly_pos_traj, target_dt=av_dt, int_dt=discretization_dt)
+    reference_traj, t_ref, reference_u = minimum_snap_trajectory_generator(traj, yaw, t_ref, quad, None, False, adjust_pos=False)
+    return reference_traj, t_ref, reference_u
+
+
+def flyover_trajectory(quad, discretization_dt, seed, speed, flyover_box_name):
+    np.random.seed(seed)
+    flyover_box = load_map_limits_from_file(flyover_box_name)
+    box_x_len = flyover_box['x'][1] - flyover_box['x'][0]
+    box_y_len = flyover_box['y'][1] - flyover_box['y'][0]
+    box_z_len = flyover_box['z'][1] - flyover_box['z'][0]
+    box_center = np.array([flyover_box['x'][0] + box_x_len / 2, flyover_box['y'][0] + box_y_len / 2])
+    box_diag = (box_x_len ** 2 + box_y_len ** 2) ** 0.5
+
+    pos_traj = np.zeros((17, 3))
+
+    rand_direction = (np.random.rand(2) - 0.5) * 2
+    rand_direction = rand_direction / np.linalg.norm(rand_direction)
+    height = flyover_box['z'][0] + np.random.rand() * box_z_len
+    start_point = box_center + rand_direction * 0.6 * box_diag
+
+    pos_traj[0, :2] = start_point
+    pos_traj[0, 2] = height
+
+    for i in range(1, 16, 3):
+        rand_direction = (np.random.rand(2) - 0.5) * 2
+        rand_direction = rand_direction / np.linalg.norm(rand_direction)
+        height = flyover_box['z'][0] + np.random.rand() * box_z_len
+        start_point = box_center + rand_direction * 0.6 * box_diag
+
+        direction = (box_center - start_point)
+        direction = direction / np.linalg.norm(direction)
+
+        flyover_center_point = box_center
+
+        target_point = box_center + direction * 0.6 * box_diag
+
+        pos_traj[i, :2] = start_point
+        pos_traj[i, 2] = height
+        pos_traj[i + 1, :2] = flyover_center_point
+        pos_traj[i + 1, 2] = height
+        pos_traj[i + 2, :2] = target_point
+        pos_traj[i + 2, 2] = height
+
+    target_point = box_center + direction * 1.2 * box_diag
+    pos_traj[i + 3, :2] = target_point
+    pos_traj[i + 3, 2] = height
+
+    att_traj = np.zeros_like(pos_traj)
+
+    av_dist = np.mean(np.sqrt(np.sum(np.diff(pos_traj, axis=0) ** 2, axis=1)))
+    av_dt = av_dist / speed
+
+    poly_pos_traj = fit_multi_segment_polynomial_trajectory(pos_traj.T, att_traj[:, -1].T)
+    traj, yaw, t_ref = get_full_traj(poly_pos_traj, target_dt=av_dt, int_dt=discretization_dt)
+    reference_traj, t_ref, reference_u = minimum_snap_trajectory_generator(traj, yaw, t_ref, quad, None, False,
+                                                                           adjust_pos=False)
     return reference_traj, t_ref, reference_u
 
 

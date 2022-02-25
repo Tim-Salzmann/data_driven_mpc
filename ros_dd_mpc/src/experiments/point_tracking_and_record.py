@@ -327,15 +327,16 @@ if __name__ == '__main__':
     parser.add_argument("--dataset_name", type=str, default="simplified_sim_dataset",
                         help="Name for the generated dataset.")
 
-    parser.add_argument("--training_split", type=bool, default=True,
+    parser.add_argument("--test_split", dest="test_split", action="store_true",
                         help="If the data set is the training or test split.")
+    parser.set_defaults(test_split=False)
 
     parser.add_argument("--simulation_time", type=float, default=300,
                         help="Total duration of the simulation in seconds.")
 
     args = parser.parse_args()
 
-    np.random.seed(0)
+    np.random.seed(123 if args.test_split else 456)
 
     acados_config = {
         "solver_type": "SQP",
@@ -352,7 +353,7 @@ if __name__ == '__main__':
         "recording_options": {
             "recording": args.recording,
             "dataset_name": args.dataset_name,
-            "training_split": args.training_split,
+            "training_split": not args.test_split,
         },
         "simulation_options": SimpleSimConfig.simulation_disturbances,
         "parameters": {

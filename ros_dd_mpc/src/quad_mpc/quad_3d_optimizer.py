@@ -19,8 +19,11 @@ import casadi as cs
 import numpy as np
 from copy import copy
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
+
+from config.configuration_parameters import GroundEffectMapConfig
 from src.quad_mpc.quad_3d import Quadrotor3D
 from src.model_fitting.gp import GPEnsemble
+from src.utils.ground_map import GroundMapWithBox
 from src.utils.utils import skew_symmetric, v_dot_q, safe_mkdir_recursive, quaternion_inverse
 from src.utils.quad_3d_opt_utils import discretize_dynamics_and_cost
 
@@ -340,23 +343,59 @@ class Quad3DOptimizer:
                 acados_models[i] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
 
         elif self.mlp_regressor is not None:
-            gp_x = self.gp_x * self.trigger_var + self.x * (1 - self.trigger_var)
+            state = self.gp_x * self.trigger_var + self.x * (1 - self.trigger_var)
             #  Transform velocity to body frame
-            v_b = v_dot_q(gp_x[7:10], quaternion_inverse(gp_x[3:7]))
-            gp_x = cs.vertcat(gp_x[:7], v_b, gp_x[10:])
+            v_b = v_dot_q(state[7:10], quaternion_inverse(state[3:7]))
+            state = cs.vertcat(state[:7], v_b, state[10:])
+            mlp_in = v_b
+
+            if self.mlp_conf['torque_output']:
+                mlp_in = cs.vertcat(mlp_in, state[10:])
 
             if self.mlp_conf['u_inp']:
-                mlp_in = cs.vertcat(v_b, self.u)
-            else:
-                mlp_in = v_b
+                mlp_in = cs.vertcat(mlp_in, self.u)
+
+            if self.mlp_conf['ground_map_input']:
+                map_conf = GroundEffectMapConfig
+                map = GroundMapWithBox(np.array(map_conf.box_min),
+                                       np.array(map_conf.box_max),
+                                       map_conf.box_height,
+                                       horizon=map_conf.horizon,
+                                       resolution=map_conf.resolution)
+
+                self._map_res = map_conf.resolution
+
+                self._static_ground_map, self._org_to_map_org = map.at(np.array(map_conf.origin))
+                ground_map_dx = cs.MX(self._static_ground_map)
+
+                idx = cs.DM(np.arange(0, 3, 1))
+
+                x, y, z = state[0], state[1], state[2]
+                orientation = state[3:7]
+
+                x_idxs = cs.floor((x - self._org_to_map_org[0]) / map_conf.resolution) + idx - 1
+                y_idxs = cs.floor((y - self._org_to_map_org[1]) / map_conf.resolution) + idx - 1
+                ground_patch = ground_map_dx[x_idxs, y_idxs]
+
+                relative_ground_patch = z - ground_patch
+                relative_ground_patch = 4 * (cs.fmax(cs.fmin(relative_ground_patch, 0.5), 0.0) - 0.25)
+
+                ground_effect_in = cs.vertcat(cs.reshape(relative_ground_patch, 9, 1), orientation*0)
+
+                mlp_in = cs.vertcat(mlp_in, ground_effect_in)
 
             if not self.mlp_conf['approximated']:
                 outs = self.mlp_regressor(mlp_in)
             else:
                 outs = self.mlp_regressor.approx(mlp_in, order=self.mlp_conf['approx_order'], parallel=False)
 
-            # Unpack prediction outputs. Transform back to world reference frame
-            mlp_means = v_dot_q(outs, gp_x[3:7])
+            if self.mlp_conf['torque_output']:
+                outs_force = outs[:3]
+                outs_torque = outs[3:]
+                mlp_means = cs.vertcat(v_dot_q(outs_force, state[3:7]), outs_torque)
+            else:
+                # Unpack prediction outputs. Transform back to world reference frame
+                mlp_means = v_dot_q(outs, state[3:7])
 
             # Add GP mean prediction
             dynamics_equations[0] = nominal + cs.mtimes(self.B_x, mlp_means)
@@ -375,7 +414,7 @@ class Quad3DOptimizer:
             else:
                 params = cs.vertcat(self.gp_x, self.trigger_var,
                                     self.mlp_regressor.sym_approx_params(order=self.mlp_conf['approx_order'],
-                                                                                flat=True))
+                                                                         flat=True))
             acados_models[0] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
 
         else:
@@ -621,7 +660,6 @@ class Quad3DOptimizer:
                     self.w_opt_acados = np.hstack(self.u_target)
 
             gp_state = gp_regression_state if gp_regression_state is not None else initial_state
-
             if not self.mlp_conf['approximated']:
                 self.acados_ocp_solver[use_model].set(0, 'p', np.hstack([np.array(gp_state + [1])]))
                 for j in range(1, self.N):
@@ -633,8 +671,23 @@ class Quad3DOptimizer:
                     a_list.append(v_dot_q(np.array(state[i, 7:10]), quaternion_inverse(np.array(state[i, 3:7]))))
                 a = np.array(a_list)[:self.N]
 
+                if self.mlp_conf['torque_output']:
+                    a = np.concatenate([a, state[:self.N, 10:]], axis=-1)
+
                 if self.mlp_conf['u_inp']:
                     a = np.concatenate([a, self.w_opt_acados], axis=-1)
+
+                if self.mlp_conf['ground_map_input']:
+                    ground_maps = []
+                    for i in range(state.shape[0]):
+                        pos = state[i][:2]
+                        x_idxs = np.floor((pos[0] - self._org_to_map_org[0]) / self._map_res).astype(int) - 3
+                        y_idxs = np.floor((pos[1] - self._org_to_map_org[1]) / self._map_res).astype(int) - 3
+                        ground_patch = self._static_ground_map[x_idxs:x_idxs + 6, y_idxs:y_idxs + 6]
+                        flatten_ground_patch = ground_patch.flatten()
+                        ground_maps.append(flatten_ground_patch)
+
+                    a = np.concatenate([a, np.array(ground_maps)[:self.N]], axis=-1)
 
                 mlp_params = self.mlp_regressor.approx_params(a, order=self.mlp_conf['approx_order'], flat=True)
                 mlp_params = np.vstack([mlp_params, mlp_params[[-1]]])

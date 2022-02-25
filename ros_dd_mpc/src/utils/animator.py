@@ -217,7 +217,7 @@ class Dynamic3DTrajectory:
         return self.lines
 
     def animate(self, i):
-        i = (2 * i) % self.data.shape[1]
+        #i = (2 * i) % self.data.shape[1]
         for j, (line, xi) in enumerate(zip(self.lines[:self.n_lines], self.sparsed_data)):
             x, y, z = xi[:i].T
 
@@ -239,8 +239,8 @@ class Dynamic3DTrajectory:
             self.lines[j + 3 * self.n_lines].set_3d_properties(self.min_z)
 
             if len(x) > 0:
-                self.lines[j + 4 * self.n_lines].set_data(x[-1], y[-1])
-                self.lines[j + 4 * self.n_lines].set_3d_properties(z[-1])
+                self.lines[j + 4 * self.n_lines].set_data([x[-1]], [y[-1]])
+                self.lines[j + 4 * self.n_lines].set_3d_properties([z[-1]])
 
                 self.lines[self.top_down_0_idx + j + self.n_lines].set_data(x[-1], y[-1])
 
@@ -262,12 +262,12 @@ class Dynamic3DTrajectory:
         self.on_launch()
 
         ani = animation.FuncAnimation(self.figure, self.animate, init_func=self.on_init, frames=self.data_len,
-                                      interval=5, blit=True, repeat=False)
+                                      interval=20, blit=True, repeat=False)
 
         if save:
             results_dir = DirectoryConfig.RESULTS_DIR
-            plt.rcParams['animation.ffmpeg_path'] = '/usr/bin/ffmpeg'
-            writer = animation.FFMpegWriter(fps=30)
+            plt.rcParams['animation.ffmpeg_path'] = '/usr/local/bin/ffmpeg'
+            writer = animation.FFMpegWriter(fps=50)
             ani.save(results_dir + '/animation.mp4', writer=writer)
 
         else:

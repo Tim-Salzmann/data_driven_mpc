@@ -68,7 +68,8 @@ def custom_quad_param_loader(quad_name):
 
 
 class ROSDDMPC:
-    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, models=None, model_conf=None, rdrv=None):
+    def __init__(self, t_horizon, n_mpc_nodes, opt_dt, quad_name, point_reference=False, models=None,
+                 model_conf=None, rdrv=None):
 
         quad = custom_quad_param_loader(quad_name)
 

@@ -56,24 +56,24 @@ class ModelFitConfig:
     Class for storing flags for the model fitting scripts.
     """
 
-    ## Dataset loading ## #
-    # ds_name = "simplified_sim_dataset"
-    # ds_metadata = {
-    #     "noisy": True,
-    #     "drag": True,
-    #     "payload": False,
-    #     "motor_noise": True
-    # }
-
-    # ds_name = "gazebo_dataset"
-    # ds_metadata = {
-    #     "gazebo": "default",
-    # }
-
-    ds_name = "agisim_dataset"
+    # Dataset loading ## #
+    ds_name = "simplified_sim_dataset"
     ds_metadata = {
-        "agisim": "default",
+        "noisy": True,
+        "drag": True,
+        "payload": False,
+        "motor_noise": True
     }
+
+    # ds_name = "agisim_dataset"
+    # ds_metadata = {
+    #     "agisim": "default",
+    # }
+
+    # ds_name = "arena_dataset"
+    # ds_metadata = {
+    #     "arena": "default",
+    # }
 
     # ## Visualization ## #
     # Training mode
@@ -102,3 +102,15 @@ class ModelFitConfig:
     # ## Clustering for multidimensional models ## #
     clusters = 1
     load_clusters = False
+
+
+class GroundEffectMapConfig:
+    """
+    Class for storing parameters for the ground effect map.
+    """
+    resolution = 0.1
+    origin = (-4, 9)
+    horizon = ((-7, 7), (-7, 7))
+    box_min = (-4.25, 9.37)
+    box_max = (-2.76, 10.13)
+    box_height = 0.7

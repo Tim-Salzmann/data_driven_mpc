@@ -14,27 +14,29 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 
 import json
 import os
-import time
-import rospy
-import rosbag
 import threading
+import time
+
 import numpy as np
 import pandas as pd
+import rosbag
+import rospy
 import std_msgs.msg
-from tqdm import tqdm
-from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, Empty
-from geometry_msgs.msg import PoseStamped
-from ros_gp_mpc.msg import ReferenceTrajectory
-from agiros_msgs.msg import Command, QuadState
-from src.quad_mpc.create_ros_gp_mpc import ROSGPMPC
+from agiros_msgs.msg import Command
 from gazebo_msgs.srv import GetPhysicsProperties
-from src.utils.utils import jsonify, interpol_mse, quaternion_state_mse, load_pickled_models, v_dot_q, \
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
+from ros_dd_mpc.msg import ReferenceTrajectory
+from std_msgs.msg import Bool, Empty
+from tqdm import tqdm
+
+from src.experiments.point_tracking_and_record import make_record_dict, get_record_file_and_dir, check_out_data
+from src.model_fitting.rdrv_fitting import load_rdrv
+from src.quad_mpc.create_ros_dd_mpc import ROSDDMPC
+from src.utils.utils import jsonify, interpol_mse, quaternion_state_mse, load_pickled_models, \
     separate_variables, get_model_dir_and_file
 from src.utils.visualization import trajectory_tracking_results, mse_tracking_experiment_plot, \
     load_past_experiments, get_experiment_files
-from src.experiments.point_tracking_and_record import make_record_dict, get_record_file_and_dir, check_out_data
-from src.model_fitting.rdrv_fitting import load_rdrv
 
 
 def odometry_parse(odom_msg):
@@ -81,8 +83,8 @@ def odometry_skipped_warning(last_seq, current_seq, stage):
     rospy.logwarn(skip_msg)
 
 
-class GPMPCWrapper:
-    def __init__(self, quad_name, environment="gazebo", recording_options=None, load_options=None, use_ekf=False,
+class DDMPCWrapper:
+    def __init__(self, quad_name, environment="agisim", recording_options=None, load_options=None,
                  rdrv=None, plot=False, reset_experiment=False):
 
         if recording_options is None:
@@ -106,13 +108,13 @@ class GPMPCWrapper:
         self.plot = plot
         self.recording_options = recording_options
 
-        # Control at 50 (sim) or 60 (real) hz. Use time horizon=1 and 10 nodes
+        # Control at 50 hz. Use time horizon=1 and 10 nodes
         self.n_mpc_nodes = rospy.get_param('~n_nodes', default=10)
         self.t_horizon = rospy.get_param('~t_horizon', default=1.0)
         self.control_freq_factor = rospy.get_param('~control_freq_factor', default=5 if environment == "gazebo" else 6)
         self.opt_dt = self.t_horizon / (self.n_mpc_nodes * self.control_freq_factor)
 
-        # Load trained GP model
+        # Load trained model
         mlp_conf = None
         if load_options is not None:
             if load_options['model_type'] == 'gp':
@@ -122,11 +124,15 @@ class GPMPCWrapper:
             else:
                 import torch
                 import ml_casadi.torch as mc
-                from src.model_fitting.mlp_common import NormalizedMLP
+                from src.model_fitting.mlp_common import NormalizedMLP, QuadResidualModel
                 directory, file_name = get_model_dir_and_file(load_options)
                 saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
-                mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
-                                               saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+                model_type = load_options['model_type']
+                if '_qres' in model_type:
+                    mlp_model = QuadResidualModel(saved_dict['hidden_size'], saved_dict['hidden_layers'])
+                else:
+                    mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
+                                                   saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
                 model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                       torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                       torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
@@ -135,30 +141,42 @@ class GPMPCWrapper:
                 model.eval()
                 pre_trained_models = model
 
-                mlp_conf = {'approximated': False, 'v_inp': True, 'u_inp': False}
-                model_type = load_options['model_type']
+                mlp_conf = {'approximated': False, 'v_inp': True, 'u_inp': False, 'ground_map_input': False,
+                            'torque_output': False}
+
                 print(model_type)
-                if model_type.endswith('approx'):
+                if model_type.endswith('approx') or model_type.endswith('approx1'):
                     mlp_conf['approximated'] = True
                     mlp_conf['approx_order'] = 1
+                if model_type.endswith('approx2'):
+                    mlp_conf['approximated'] = True
+                    mlp_conf['approx_order'] = 2
                 if '_u' in model_type:
                     mlp_conf['u_inp'] = True
+                if '_ge' in model_type:
+                    mlp_conf['ground_map_input'] = True
+                if '_T' in model_type:
+                    mlp_conf['torque_output'] = True
+                if '_qres' in model_type:
+                    mlp_conf['u_inp'] = True
+                    mlp_conf['torque_output'] = True
+
             if pre_trained_models is None:
-                rospy.logwarn("Model parameters specified did not match with any pre-trained GP")
+                rospy.logwarn("Model parameters specified did not match with any pre-trained model")
         else:
             pre_trained_models = None
         self.pre_trained_models = pre_trained_models
         self.git_v = load_options["git"]
         if self.pre_trained_models is not None:
-            rospy.loginfo("Successfully loaded GP model")
+            rospy.loginfo("Successfully loaded model")
             self.model_name = load_options["model_name"]
         elif rdrv is not None:
             self.model_name = "rdrv"
         else:
             self.model_name = "Nominal"
 
-        # Initialize GP MPC for point tracking
-        self.gp_mpc = ROSGPMPC(self.t_horizon, self.n_mpc_nodes, self.opt_dt, quad_name=quad_name,
+        # Initialize MPC for point tracking
+        self.dd_mpc = ROSDDMPC(self.t_horizon, self.n_mpc_nodes, self.opt_dt, quad_name=quad_name,
                                model_conf=mlp_conf, point_reference=False, models=pre_trained_models,
                                rdrv=rdrv)
 
@@ -177,6 +195,7 @@ class GPMPCWrapper:
         self.t_ref = None
         self.u_ref = None
         self.current_idx = 0
+        self.skipped_idx = []
         self.quad_trajectory = None
         self.quad_controls = None
         self.w_control = None
@@ -221,9 +240,6 @@ class GPMPCWrapper:
         self.recording_warmup = True
         self.x_pred = None
         self.w_opt = None
-
-        # Odometry estimate for GP. None by default if same odometry as control reference should be used
-        self.gp_odom = None
 
         # Get recording file and directory
         blank_recording_dict = make_record_dict(state_dim=13)
@@ -273,25 +289,10 @@ class GPMPCWrapper:
 
         # Setup node publishers and subscribers. The odometry (sub) and control (pub) topics will vary depending on
         # which environment is being used
-        ekf_odom_topic = None
-        if self.environment == "gazebo":
-            odom_topic = "/" + quad_name + "/agiros_pilot/odometry"
-            raw_topic = None
-        elif self.environment == "agisim":
-            odom_topic = "/" + quad_name + "/agiros_pilot/odometry"
-            raw_topic = None
-        elif self.environment == "arena":
-            # Assume arena world setup
-            odom_topic = "/" + quad_name + "/state_estimate"
+        odom_topic = "/" + quad_name + "/agiros_pilot/odometry"
+        raw_topic = None
+        if self.environment == "arena":
             raw_topic = "/vicon/" + quad_name
-            if use_ekf:
-                ekf_odom_topic = "/" + quad_name + "/state_estimate_ekf"
-        else:
-            # Assume real world setup
-            odom_topic = "/" + quad_name + "/state_estimate"
-            raw_topic = "/optitrack/" + quad_name
-            if use_ekf:
-                ekf_odom_topic = "/" + quad_name + "/state_estimate_ekf"
 
         land_topic = "/" + quad_name + "/agiros_pilot/land"
         control_topic = "/" + quad_name + "/agiros_pilot/feedthrough_command"
@@ -306,18 +307,9 @@ class GPMPCWrapper:
         self.off_pub = rospy.Publisher(off_topic, Empty, queue_size=1)
 
         # Subscribers
-        self.state_sub = rospy.Subscriber("/" + quad_name + "/agiros_pilot/state", QuadState, self.state_callback)
         self.land_sub = rospy.Subscriber(land_topic, Empty, self.land_callback)
         self.ref_sub = rospy.Subscriber(reference_topic, ReferenceTrajectory, self.reference_callback)
-        if ekf_odom_topic:
-            # We get a second odometry estimate which is smoothed. Used to evaluate the GP's.
-            self.odom_sub = rospy.Subscriber(
-                odom_topic, Odometry, self.odometry_callback, queue_size=1, tcp_nodelay=True)
-            self.ekf_odom_sub = rospy.Subscriber(
-                ekf_odom_topic, Odometry, self.ekf_odom_callback, queue_size=1, tcp_nodelay=True)
-        else:
-            self.odom_sub = rospy.Subscriber(
-                odom_topic, Odometry, self.odometry_callback, queue_size=1, tcp_nodelay=True)
+        self.odom_sub = rospy.Subscriber(odom_topic, Odometry, self.odometry_callback, queue_size=1, tcp_nodelay=True)
         if raw_topic is not None and record_raw_optitrack:
             self.raw_sub = rospy.Subscriber(raw_topic, PoseStamped, self.raw_odometry_callback)
 
@@ -328,29 +320,6 @@ class GPMPCWrapper:
             msg.data = not (self.x_ref is None and self.odom_available)
             self.status_pub.publish(msg)
             rate.sleep()
-
-    def state_callback(self, msg):
-        current_idx = self.current_idx
-        if self.recording_options["recording"] and not self.recording_warmup and self.x_initial_reached and current_idx < self.x_ref.shape[0]:
-            p, q, v, w, omega = state_parse(msg)
-            x = p + q + v + w
-            self.state_rec_dict['state_in'] = np.append(self.state_rec_dict["state_in"], np.array(x)[np.newaxis, :], 0)
-            self.state_rec_dict['input_in'] = np.append(self.state_rec_dict["input_in"], np.array(omega)[np.newaxis, :], 0)
-            self.state_rec_dict['timestamp'] = np.append(self.state_rec_dict["timestamp"], msg.header.stamp.to_time())
-            self.state_rec_dict["state_ref"] = np.append(self.state_rec_dict["state_ref"], self.x_ref[np.newaxis, current_idx, :], 0)
-
-    def create_command_msg(self, w_opt, x_opt):
-        next_control = Command()
-        next_control.header = std_msgs.msg.Header()
-        next_control.header.stamp = rospy.Time.now()
-        next_control.is_single_rotor_thrust = False
-        next_control.collective_thrust = np.sum(w_opt[:4]) * self.gp_mpc.quad.max_thrust / self.gp_mpc.quad.mass
-        next_control.bodyrates.x = x_opt[1, -3]
-        next_control.bodyrates.y = x_opt[1, -2]
-        next_control.bodyrates.z = x_opt[1, -1]
-        next_control.thrusts = w_opt[:4] * self.gp_mpc.quad.max_thrust
-
-        return next_control
 
     def land_callback(self, _):
         """
@@ -366,8 +335,23 @@ class GPMPCWrapper:
         Set quad reference to hover state at position (0, 0, 0.1)
         """
         self.last_x_ref = [[self.x[0], self.x[1], self.x[2]], [1, 0, 0, 0], [0, 0, 0], [0, 0, 0]]
-        self.last_u_ref = self.gp_mpc.quad.g[-1] * self.gp_mpc.quad.mass / (self.gp_mpc.quad.max_thrust * 4)
+        self.last_u_ref = self.dd_mpc.quad.g[-1] * self.dd_mpc.quad.mass / (self.dd_mpc.quad.max_thrust * 4)
         self.last_u_ref = self.last_u_ref[0] * np.array([1, 1, 1, 1])
+
+    def create_command_msg(self, w_opt, x_opt):
+        """
+        Creates Command Msg from MPC output.
+        """
+        next_control = Command()
+        next_control.header = std_msgs.msg.Header()
+        next_control.header.stamp = rospy.Time.now()
+        next_control.is_single_rotor_thrust = True if self.environment == 'agisim' else False
+        next_control.collective_thrust = np.sum(w_opt[:4]) * self.dd_mpc.quad.max_thrust / self.dd_mpc.quad.mass
+        next_control.bodyrates.x = x_opt[1, -3]
+        next_control.bodyrates.y = x_opt[1, -2]
+        next_control.bodyrates.z = x_opt[1, -1]
+        next_control.thrusts = w_opt[:4] * self.dd_mpc.quad.max_thrust
+        return next_control
 
     def run_mpc(self, odom, recording=True):
         """
@@ -388,7 +372,7 @@ class GPMPCWrapper:
         # Run MPC and publish control
         try:
             tic = time.time()
-            w_opt, x_opt = self.gp_mpc.optimize(model_data)
+            w_opt, x_opt = self.dd_mpc.optimize(model_data)
             next_control = self.create_command_msg(w_opt, x_opt)
             self.optimization_dt += time.time() - tic
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
@@ -458,6 +442,7 @@ class GPMPCWrapper:
             self.landing = False
             rospy.loginfo("No more references will be received")
             if self.raw_state_control_bag is not None:
+                self.record_raw_state_control = False
                 self.raw_state_control_bag.close()
             return
 
@@ -476,24 +461,6 @@ class GPMPCWrapper:
 
         rospy.loginfo("New trajectory received. Time duration: %.2f s" % self.t_ref[-1])
 
-    def sync_odom_callback(self, msg1, msg2):
-        """
-        Synchronized callback function for the odometry estimates. TODO: is this the best way?
-        :param msg1: Odometry estimate for flight control.
-        :type msg1: Odometry
-        :param msg2: Odometry estimate for GP inference.
-        :type msg2: Odometry
-        """
-
-        p, q, v, w = odometry_parse(msg2)
-        self.gp_odom = p + q + v + w
-        self.odometry_callback(msg1)
-
-    def ekf_odom_callback(self, msg):
-
-        p, q, v, w = odometry_parse(msg)
-        self.gp_odom = p + q + v + w
-
     def odometry_callback(self, msg):
         """
         Callback function for Odometry subscriber
@@ -508,14 +475,10 @@ class GPMPCWrapper:
 
         try:
             # Update the state estimate of the quad
-            self.gp_mpc.set_state(self.x)
-
-            # If an estimate specifically for the GP's is available, also update it
-            if self.gp_odom is not None:
-                self.gp_mpc.set_gp_state(self.gp_odom)
+            self.dd_mpc.set_state(self.x)
 
         except AttributeError:
-            # The GP MPC object instantiation is still not finished
+            # The DD MPC object instantiation is still not finished
             return
 
         if self.override_land:
@@ -541,6 +504,9 @@ class GPMPCWrapper:
                     rospy.logwarn(warn_msg)
 
                 # Adjust current index in trajectory
+                for i in range(divmod(skipped_messages, 2)[0]):
+                    if self.current_idx + i < self.x_ref.shape[0]:
+                        self.skipped_idx.append(self.current_idx + i)
                 self.current_idx += divmod(skipped_messages, 2)[0]
                 # If odd number of skipped messages, do optimization
                 if skipped_messages > 0 and skipped_messages % 2 == 1:
@@ -601,11 +567,11 @@ class GPMPCWrapper:
         u_ref = self.last_u_ref
         x_guess = np.tile(np.concatenate(x_ref)[np.newaxis, :], (self.n_mpc_nodes, 1))
         u_guess = np.tile(self.last_u_ref[np.newaxis, :], (self.n_mpc_nodes, 1))
-        return self.gp_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
+        return self.dd_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
 
     def set_reference(self):
 
-        if self.environment == "gazebo":
+        if self.environment == "gazebo" or self.environment== "agisim":
             th = 0.1
         else:
             th = 0.5
@@ -622,13 +588,12 @@ class GPMPCWrapper:
 
         # Check if landing mode
         if self.landing:
-            dz = np.sign(0.05 - self.x[2])
-            dz = dz * 0.5
-            x_ref[0][2] = min(0.05, self.x[2] + dz) if dz > 0 else max(0.01, self.x[2] + dz)
-            u_ref = self.last_u_ref - 0.1
-            # Check if z position is close to target.
-            if abs(self.x[2] - 0.1) < 0.2:
+            dz = np.sign(0.3 - self.x[2])
+            dz = dz * 0.1 if self.environment != "agisim" else dz * 0.5
+            x_ref[0][2] = min(0.1, self.x[2] + dz) if dz > 0 else max(0.1, self.x[2] + dz)
 
+            # Check if z position is close to target.
+            if abs(self.x[2] - 0.6) < 0.05:
                 executed_x_ref = self.x_ref
                 executed_u_ref = self.u_ref
                 executed_t_ref = self.t_ref
@@ -643,7 +608,10 @@ class GPMPCWrapper:
                     self.save_recording_data()
 
                 # Calculate MSE of position tracking and maximum axial velocity achieved
-                rmse = interpol_mse(executed_t_ref, executed_x_ref[:, :3], executed_t_ref, self.quad_trajectory[:, :3])
+                rmse = interpol_mse(np.delete(executed_t_ref, self.skipped_idx, axis=0),
+                                    np.delete(executed_x_ref[:, :3], self.skipped_idx, axis=0),
+                                    np.delete(executed_t_ref, self.skipped_idx, axis=0),
+                                    np.delete(self.quad_trajectory[:, :3], self.skipped_idx, axis=0))
                 self.optimization_dt /= self.current_idx
 
                 if self.ref_traj_name in self.metadata_dict.keys():
@@ -690,7 +658,7 @@ class GPMPCWrapper:
                 self.landing = False
                 self.ground_level = True
 
-            return self.gp_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
+            return self.dd_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
 
         # Check if reference trajectory is set up. If not, pick current position and keep hover
         if self.x_ref is None:
@@ -722,7 +690,7 @@ class GPMPCWrapper:
             self.odom_available = False
             self.optimization_dt = 0
             rospy.loginfo("Reached initial position of trajectory.")
-            model_data = self.gp_mpc.set_reference(separate_variables(self.x_ref[:1, :]), self.u_ref[:1, :])
+            model_data = self.dd_mpc.set_reference(separate_variables(self.x_ref[:1, :]), self.u_ref[:1, :])
             return model_data, x_guess, u_guess
 
         # Raise the drone towards the initial position of the trajectory
@@ -781,7 +749,7 @@ class GPMPCWrapper:
 
         self.last_x_ref = x_ref
         self.last_u_ref = u_ref
-        return self.gp_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
+        return self.dd_mpc.set_reference(x_ref, u_ref), x_guess, u_guess
 
     def plot_tracking_mse_experiment(self):
 
@@ -808,33 +776,13 @@ class GPMPCWrapper:
 
         # Compute predictions offline to avoid extra overhead while in trajectory tracking control
         rospy.loginfo("Filling in dataset and saving...")
-        # self.rec_dict = make_record_dict(state_dim=13)
-        # for i in tqdm(range(len(self.state_rec_dict['input_in'])-1)):
-        #     if np.alltrue(np.abs(self.state_rec_dict['input_in'][i] - self.state_rec_dict['input_in'][i+1]) < 10):
-        #     #if np.alltrue(self.state_rec_dict['input_in'][i] == self.state_rec_dict['input_in'][i+1]):
-        #         x_0 = self.state_rec_dict['state_in'][i]
-        #         x_f = self.state_rec_dict['state_in'][i+1]
-        #         omega_mean = np.stack([self.state_rec_dict['input_in'][i], self.state_rec_dict['input_in'][i+1]], axis=0).mean(axis=0)
-        #         u = omega_mean**2 * self.gp_mpc.quad.thrust_map[0] / self.gp_mpc.quad.max_thrust
-        #         dt = self.state_rec_dict['timestamp'][i+1] - self.state_rec_dict['timestamp'][i]
-        #         x_pred, _ = self.gp_mpc.quad_mpc.forward_prop(x_0, u, t_horizon=dt, use_gp=False)
-        #         x_pred = x_pred[-1, np.newaxis, :]
-        #
-        #         self.rec_dict['state_in'] = np.append(self.rec_dict['state_in'], x_0[np.newaxis, :], axis=0)
-        #         self.rec_dict['input_in'] = np.append(self.rec_dict['input_in'], u[np.newaxis, :], axis=0)
-        #         self.rec_dict['state_out'] = np.append(self.rec_dict['state_out'], x_f[np.newaxis, :], axis=0)
-        #         self.rec_dict['state_ref'] = np.append(self.rec_dict['state_ref'], self.state_rec_dict['state_ref'][i, np.newaxis], axis=0)
-        #         self.rec_dict['timestamp'] = np.append(self.rec_dict['timestamp'], self.state_rec_dict['timestamp'][i])
-        #         self.rec_dict['dt'] = np.append(self.rec_dict['dt'], dt)
-        #         self.rec_dict['state_pred'] = np.append(self.rec_dict['state_pred'], x_pred, axis=0)
-        #         self.rec_dict['error'] = np.append(self.rec_dict['error'], x_f - x_pred, axis=0)
 
         for i in tqdm(range(len(self.rec_dict['input_in']))):
             x_0 = self.rec_dict['state_in'][i]
             x_f = self.rec_dict['state_out'][i]
             u = self.rec_dict['input_in'][i]
             dt = self.rec_dict['dt'][i]
-            x_pred, _ = self.gp_mpc.quad_mpc.forward_prop(x_0, u, t_horizon=dt, use_gp=False)
+            x_pred, _ = self.dd_mpc.quad_mpc.forward_prop(x_0, u, t_horizon=dt)
             x_pred = x_pred[-1, np.newaxis, :]
 
             self.rec_dict['state_pred'] = np.append(self.rec_dict['state_pred'], x_pred, axis=0)
@@ -869,7 +817,7 @@ class GPMPCWrapper:
 
 
 def main():
-    rospy.init_node("gp_mpc")
+    rospy.init_node("dd_mpc")
 
     # Recording parameters
     recording_options = {
@@ -897,7 +845,7 @@ def main():
     if raw_state_control is not None:
         recording_options["record_raw_state_control"] = raw_state_control
 
-    # GP loading parameters
+    # Model loading parameters
     load_options = {
         "git": "b6e73a5",
         "model_name": "",
@@ -913,11 +861,11 @@ def main():
     if model_type is not None:
         load_options["model_type"] = str(model_type)
 
-    plot = True
+    plot = False
     plot = rospy.get_param('~plot', default=None) if rospy.get_param('~plot', default=None) is not None else plot
 
     env = rospy.get_param('~environment', default='gazebo')
-    default_quad = "hummingbird" if env == "gazebo" else "kingfisher" #"colibri"
+    default_quad = "hummingbird" if env == "gazebo" else "kingfisher"
     load_options["params"] = {env: "default"}
 
     if model_type == "rdrv":
@@ -930,18 +878,13 @@ def main():
     # Change if needed. This is currently the supported combination.
     if env == "gazebo":
         assert quad_name == "hummingbird"
-        ekf_sync = False
     elif env == "agisim":
         assert quad_name == "kingfisher"
-        ekf_sync = False
-    else:
-        assert quad_name == "colibri"
-        ekf_sync = rospy.get_param('~use_ekf_synchronization', default=False)
 
     # Reset experiments switch
     reset = rospy.get_param('~reset_experiment', default=True)
 
-    GPMPCWrapper(quad_name, env, recording_options, load_options, use_ekf=ekf_sync, rdrv=rdrv, plot=plot,
+    DDMPCWrapper(quad_name, env, recording_options, load_options, rdrv=rdrv, plot=plot,
                  reset_experiment=reset)
 
 

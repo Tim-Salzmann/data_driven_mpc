@@ -13,9 +13,10 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 """
 
 from std_msgs.msg import Bool
-from ros_gp_mpc.msg import ReferenceTrajectory
-from src.quad_mpc.create_ros_gp_mpc import custom_quad_param_loader
-from src.utils.trajectories import loop_trajectory, random_trajectory, lemniscate_trajectory
+from ros_dd_mpc.msg import ReferenceTrajectory
+from src.quad_mpc.create_ros_dd_mpc import custom_quad_param_loader
+from src.utils.trajectories import loop_trajectory, random_trajectory, lemniscate_trajectory, flyover_trajectory, \
+    flyover_trajectory_collect
 import numpy as np
 import rospy
 
@@ -42,7 +43,7 @@ class ReferenceGenerator:
 
         # Select if generate "random" trajectories, "hover" mode or increasing speed "loop" mode
         mode = rospy.get_param('~mode', default="random")
-        if mode != "random":
+        if mode != "random" and mode != "flyover":
             n_seeds = 1
 
         # Load parameters of loop trajectory
@@ -153,6 +154,60 @@ class ReferenceGenerator:
                     seed += 1
                     v_ind = 0
 
+            elif not self.gp_mpc_busy and mode == "flyover_collect":
+
+                speed = v_list[v_ind]
+                log_msg = "Flyover trajectory generator %d/%d. Seed: %d. Mean vel: %.3f m/s" % \
+                          (curr_trajectory_ind + 1, n_trajectories, seed, speed)
+                rospy.loginfo(log_msg)
+
+                x_ref, t_ref, u_ref = flyover_trajectory_collect(quad, opt_dt, seed=seed, speed=speed,
+                                                                 flyover_box_name=map_limits)
+                msg = ReferenceTrajectory()
+                msg.traj_name = "flyover_" + str(seed)
+                msg.v_input = speed
+                msg.seq_len = x_ref.shape[0]
+                msg.trajectory = np.reshape(x_ref, (-1, )).tolist()
+                msg.dt = t_ref.tolist()
+                msg.inputs = np.reshape(u_ref, (-1, )).tolist()
+
+                reference_pub.publish(msg)
+                curr_trajectory_ind += 1
+                self.gp_mpc_busy = True
+
+                if v_ind + 1 < len(v_list):
+                    v_ind += 1
+                else:
+                    seed += 1
+                    v_ind = 0
+
+            elif not self.gp_mpc_busy and mode == "flyover":
+
+                speed = v_list[v_ind]
+                log_msg = "Flyover trajectory generator %d/%d. Seed: %d. Mean vel: %.3f m/s" % \
+                          (curr_trajectory_ind + 1, n_trajectories, seed, speed)
+                rospy.loginfo(log_msg)
+
+                x_ref, t_ref, u_ref = flyover_trajectory(quad, opt_dt, seed=seed, speed=speed,
+                                                         flyover_box_name=map_limits)
+                msg = ReferenceTrajectory()
+                msg.traj_name = "flyover_" + str(seed)
+                msg.v_input = speed
+                msg.seq_len = x_ref.shape[0]
+                msg.trajectory = np.reshape(x_ref, (-1, )).tolist()
+                msg.dt = t_ref.tolist()
+                msg.inputs = np.reshape(u_ref, (-1, )).tolist()
+
+                reference_pub.publish(msg)
+                curr_trajectory_ind += 1
+                self.gp_mpc_busy = True
+
+                if v_ind + 1 < len(v_list):
+                    v_ind += 1
+                else:
+                    seed += 1
+                    v_ind = 0
+
             elif not self.gp_mpc_busy:
                 raise ValueError("Unknown trajectory type: %s" % mode)
 
@@ -160,7 +215,7 @@ class ReferenceGenerator:
 
     def status_callback(self, msg):
         """
-        Callback function for tracking if the gp_mpc node is busy
+        Callback function for tracking if the dd_mpc node is busy
         :param msg: Message from the subscriber
         :type msg: Bool
         """

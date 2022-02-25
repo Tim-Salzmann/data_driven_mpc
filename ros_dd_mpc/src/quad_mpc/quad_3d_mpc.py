@@ -68,7 +68,8 @@ class Quad3DMPC:
             self.gp_ensemble = None
             self.B_x = {}
             x_dims = len(my_quad.get_state(quaternion=True, stacked=True))
-            for y_dim in [7, 8, 9]:
+            pred_dims = [7, 8, 9] + ([10, 11, 12] if model_conf['torque_output'] else [])
+            for y_dim in pred_dims:
                 self.B_x[y_dim] = make_bx_matrix(x_dims, [y_dim])
                 self.mlp = pre_trained_models
 

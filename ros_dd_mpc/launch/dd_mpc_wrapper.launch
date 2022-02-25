@@ -15,6 +15,7 @@
     <arg name="trajectory_speeds" default="[4.0]"/>
     <arg name="flight_mode" default="random"/> <!-- one of: random, hover, loop -->
     <arg name="plot" default="false"/>
+    <arg name="world_limits" default="None"/>
 
     <!-- Stable version: Use time horizon of 1 second, 10 control nodes and control @ 50 Hz (control_freq_factor=5) -->
     <arg name="t_horizon" default="1"/>
@@ -32,8 +33,8 @@
 
         <group if="$(eval arg('environment')=='agisim')">
             <!-- Node that runs the MPC -->
-            <node pkg="ros_gp_mpc" type="gp_mpc_node.py" name="mpc_wrapper" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/agisim_simulation_run.yaml"/>
+            <node pkg="ros_dd_mpc" type="dd_mpc_node.py" name="mpc_wrapper" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/agisim_simulation_run.yaml"/>
 
                 <param name="recording" value="$(arg recording)"/>
                 <param name="dataset_name" value="$(arg dataset_name)"/>
@@ -53,13 +54,14 @@
             </node>
 
             <!-- Random trajectory generator -->
-            <node pkg="ros_gp_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/agisim_simulation_run.yaml"/>
-                <rosparam file="$(find ros_gp_mpc)/config/circle_and_lemniscate_options.yaml"/>
+            <node pkg="ros_dd_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/agisim_simulation_run.yaml"/>
+                <rosparam file="$(find ros_dd_mpc)/config/circle_and_lemniscate_options.yaml"/>
 
                 <param name="n_seeds" value="$(arg n_seeds)"/>
                 <param name="v_list" value="$(arg trajectory_speeds)"/>
                 <param name="mode" value="$(arg flight_mode)"/>
+                <param name="world_limits" value="$(arg world_limits)"/>
 
                 <param name="t_horizon" value="$(arg t_horizon)"/>
                 <param name="n_nodes" value="$(arg n_nodes)"/>
@@ -70,8 +72,8 @@
 
         <group if="$(eval arg('environment')=='gazebo')">
             <!-- Node that runs the MPC -->
-            <node pkg="ros_gp_mpc" type="gp_mpc_node.py" name="mpc_wrapper" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/simulation_run.yaml"/>
+            <node pkg="ros_dd_mpc" type="dd_mpc_node.py" name="mpc_wrapper" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/simulation_run.yaml"/>
 
                 <param name="recording" value="$(arg recording)"/>
                 <param name="dataset_name" value="$(arg dataset_name)"/>
@@ -91,13 +93,14 @@
             </node>
 
             <!-- Random trajectory generator -->
-            <node pkg="ros_gp_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/simulation_run.yaml"/>
-                <rosparam file="$(find ros_gp_mpc)/config/circle_and_lemniscate_options.yaml"/>
+            <node pkg="ros_dd_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/simulation_run.yaml"/>
+                <rosparam file="$(find ros_dd_mpc)/config/circle_and_lemniscate_options.yaml"/>
 
                 <param name="n_seeds" value="$(arg n_seeds)"/>
                 <param name="v_list" value="$(arg trajectory_speeds)"/>
                 <param name="mode" value="$(arg flight_mode)"/>
+                <param name="world_limits" value="$(arg world_limits)"/>
 
                 <param name="t_horizon" value="$(arg t_horizon)"/>
                 <param name="n_nodes" value="$(arg n_nodes)"/>
@@ -108,8 +111,8 @@
 
         <group if="$(eval arg('environment')=='flying_room')">
             <!-- Node that runs the MPC -->
-            <node pkg="ros_gp_mpc" type="gp_mpc_node.py" name="mpc_wrapper" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/flying_room_run.yaml"/>
+            <node pkg="ros_dd_mpc" type="dd_mpc_node.py" name="mpc_wrapper" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/flying_room_run.yaml"/>
 
                 <param name="recording" value="$(arg recording)"/>
                 <param name="dataset_name" value="$(arg dataset_name)"/>
@@ -129,13 +132,14 @@
             </node>
 
             <!-- Random trajectory generator -->
-            <node pkg="ros_gp_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/flying_room_run.yaml"/>
-                <rosparam file="$(find ros_gp_mpc)/config/circle_and_lemniscate_options.yaml"/>
+            <node pkg="ros_dd_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/flying_room_run.yaml"/>
+                <rosparam file="$(find ros_dd_mpc)/config/circle_and_lemniscate_options.yaml"/>
 
                 <param name="n_seeds" value="$(arg n_seeds)"/>
                 <param name="v_list" value="$(arg trajectory_speeds)"/>
                 <param name="mode" value="$(arg flight_mode)"/>
+                <param name="world_limits" value="$(arg world_limits)"/>
 
                 <param name="t_horizon" value="$(arg t_horizon)"/>
                 <param name="n_nodes" value="$(arg n_nodes)"/>
@@ -146,8 +150,8 @@
 
         <group if="$(eval arg('environment')=='arena')">
             <!-- Node that runs the MPC -->
-            <node pkg="ros_gp_mpc" type="gp_mpc_node.py" name="mpc_wrapper" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/arena_run.yaml"/>
+            <node pkg="ros_dd_mpc" type="dd_mpc_node.py" name="mpc_wrapper" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/arena_run.yaml"/>
 
                 <param name="recording" value="$(arg recording)"/>
                 <param name="dataset_name" value="$(arg dataset_name)"/>
@@ -167,13 +171,14 @@
             </node>
 
             <!-- Random trajectory generator -->
-            <node pkg="ros_gp_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
-                <rosparam file="$(find ros_gp_mpc)/config/arena_run.yaml"/>
-                <rosparam file="$(find ros_gp_mpc)/config/circle_and_lemniscate_options.yaml"/>
+            <node pkg="ros_dd_mpc" type="reference_publisher_node.py" name="ref_gen" output="screen">
+                <rosparam file="$(find ros_dd_mpc)/config/arena_run.yaml"/>
+                <rosparam file="$(find ros_dd_mpc)/config/circle_and_lemniscate_options.yaml"/>
 
                 <param name="n_seeds" value="$(arg n_seeds)"/>
                 <param name="v_list" value="$(arg trajectory_speeds)"/>
                 <param name="mode" value="$(arg flight_mode)"/>
+                <param name="world_limits" value="$(arg world_limits)"/>
 
                 <param name="t_horizon" value="$(arg t_horizon)"/>
                 <param name="n_nodes" value="$(arg n_nodes)"/>

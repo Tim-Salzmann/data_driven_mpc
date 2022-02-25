@@ -362,6 +362,9 @@ if __name__ == '__main__':
                         help='Regression X variables. Must be a list of integers between 0 and 12. Velocities xyz '
                              'correspond to indices 7, 8, 9.')
 
+    parser.add_argument('--u', action="store_true",
+                        help='Use the control as input to the model.')
+
     parser.add_argument("--y", type=int, default=7,
                         help="Regression Y variable. Must be an integer between 0 and 12. Velocities xyz correspond to"
                              "indices 7, 8, 9.")
@@ -370,7 +373,10 @@ if __name__ == '__main__':
 
     # Use vx, vy, vz as input features
     x_feats = input_arguments.x
-    u_feats = []
+    if input_arguments.u:
+        u_feats = [0, 1, 2, 3]
+    else:
+        u_feats = []
 
     # Regression dimension
     y_regressed_dim = input_arguments.y

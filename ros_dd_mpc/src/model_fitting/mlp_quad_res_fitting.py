@@ -24,7 +24,7 @@ import ml_casadi.torch as mc
 
 from tqdm import tqdm
 
-from src.model_fitting.mlp_common import GPToMLPDataset, NormalizedMLP
+from src.model_fitting.mlp_common import GPToMLPDataset, NormalizedMLP, QuadResidualModel
 from src.utils.utils import safe_mkdir_recursive, load_pickled_models
 from src.utils.utils import get_model_dir_and_file
 from src.model_fitting.gp_common import GPDataset, read_dataset
@@ -32,7 +32,7 @@ from config.configuration_parameters import ModelFitConfig as Conf
 
 
 
-def main(x_features, u_features, reg_y_dims, model_ground_effect, quad_sim_options, dataset_name,
+def main(x_features, u_features, reg_y_dims, quad_sim_options, dataset_name,
          x_cap, hist_bins, hist_thresh,
          model_name="model", epochs=100, batch_size=64, hidden_layers=1, hidden_size=32, plot=False):
 
@@ -86,16 +86,16 @@ def main(x_features, u_features, reg_y_dims, model_ground_effect, quad_sim_optio
     else:
         raise TypeError("dataset_name must be a string.")
 
-    dataset_train = GPToMLPDataset(gp_dataset_train, ground_effect=model_ground_effect)
+    dataset_train = GPToMLPDataset(gp_dataset_train)
     x_mean, x_std, y_mean, y_std = dataset_train.stats()
     data_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=0)
-    input_dims = len(x_features) + len(u_features) + (9 + 4 if model_ground_effect else 0)
-    mlp_model = mc.nn.MultiLayerPerceptron(input_dims, hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
+    input_dims = len(x_features) + len(u_features)
+    mlp_model = QuadResidualModel(hidden_size, hidden_layers)
     model = NormalizedMLP(mlp_model, torch.tensor(x_mean).float(), torch.tensor(x_std).float(),
                           torch.tensor(y_mean).float(), torch.tensor(y_std).float())
 
     if gp_dataset_val:
-        dataset_val = GPToMLPDataset(gp_dataset_val, ground_effect=model_ground_effect)
+        dataset_val = GPToMLPDataset(gp_dataset_val)
         data_loader_val = DataLoader(dataset_val, batch_size=10*batch_size, shuffle=False, num_workers=0)
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters.")
@@ -176,20 +176,6 @@ if __name__ == '__main__':
     parser.add_argument("--model_name", type=str, default="",
                         help="Name assigned to the trained model.")
 
-    parser.add_argument('--x', nargs='+', type=int, default=[7],
-                        help='Regression X variables. Must be a list of integers between 0 and 12. Velocities xyz '
-                             'correspond to indices 7, 8, 9.')
-
-    parser.add_argument('--u', action="store_true",
-                        help='Use the control as input to the model.')
-
-    parser.add_argument("--y", nargs='+', type=int, default=[7],
-                        help="Regression Y variable. Must be an integer between 0 and 12. Velocities xyz correspond to"
-                             "indices 7, 8, 9.")
-
-    parser.add_argument('--ge', action="store_true",
-                        help='Use the ground map as input to the model.')
-
     parser.add_argument("--plot", dest="plot", action="store_true",
                         help="Plot the loss after training.")
     parser.set_defaults(plot=False)
@@ -197,16 +183,11 @@ if __name__ == '__main__':
     input_arguments = parser.parse_args()
 
     # Use vx, vy, vz as input features
-    x_feats = input_arguments.x
-    if input_arguments.u:
-        u_feats = [0, 1, 2, 3]
-    else:
-        u_feats = []
-
-    model_ground_effect = input_arguments.ge
+    x_feats = [7, 8, 9, 10, 11, 12]
+    u_feats = [0, 1, 2, 3]
 
     # Regression dimension
-    y_regressed_dims = input_arguments.y
+    y_regressed_dims = [7, 8, 9, 10, 11, 12]
     model_name = input_arguments.model_name
 
     epochs = input_arguments.epochs
@@ -222,7 +203,7 @@ if __name__ == '__main__':
     histogram_pruning_threshold = Conf.histogram_threshold
     x_value_cap = Conf.velocity_cap
 
-    main(x_feats, u_feats, y_regressed_dims, model_ground_effect, simulation_options, ds_name,
+    main(x_feats, u_feats, y_regressed_dims, simulation_options, ds_name,
          x_value_cap, histogram_pruning_bins, histogram_pruning_threshold,
          model_name=model_name, epochs=epochs, batch_size=batch_size, hidden_layers=hidden_layers,
          hidden_size=hidden_size, plot=plot)
