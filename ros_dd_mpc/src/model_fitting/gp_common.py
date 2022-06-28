@@ -66,12 +66,19 @@ class GPDataset:
             self.prune()
 
     def load_data(self, ds):
-        x_raw = undo_jsonify(ds['state_in'].to_numpy())
-        x_out = undo_jsonify(ds['state_out'].to_numpy())
-        x_pred = undo_jsonify(ds['state_pred'].to_numpy())
-        u_raw = undo_jsonify(ds['input_in'].to_numpy())
+        if isinstance(ds, np.lib.npyio.NpzFile):
+            x_raw = ds['state_in']
+            x_out = ds['state_out']
+            x_pred = ds['state_pred']
+            u_raw = ds['input_in']
+            dt = ds["dt"]
+        else:
+            x_raw = undo_jsonify(ds['state_in'].to_numpy())
+            x_out = undo_jsonify(ds['state_out'].to_numpy())
+            x_pred = undo_jsonify(ds['state_pred'].to_numpy())
+            u_raw = undo_jsonify(ds['input_in'].to_numpy())
+            dt = ds["dt"].to_numpy()
 
-        dt = ds["dt"].to_numpy()
         invalid = np.where(dt == 0)
 
         # Remove invalid entries (dt = 0)
@@ -320,8 +327,13 @@ def read_dataset(name, train_split, sim_options):
     if data_file is None:
         raise FileNotFoundError
     rec_file_dir, rec_file_name = data_file
-    rec_file = os.path.join(rec_file_dir, rec_file_name)
-    ds = pd.read_csv(rec_file)
+    if rec_file_name.startswith('npz'):
+        rec_file_name = rec_file_name[:-4] + '.npz'
+        rec_file = os.path.join(rec_file_dir, rec_file_name)
+        ds = np.load(rec_file)
+    else:
+        rec_file = os.path.join(rec_file_dir, rec_file_name)
+        ds = pd.read_csv(rec_file)
 
     return ds
 

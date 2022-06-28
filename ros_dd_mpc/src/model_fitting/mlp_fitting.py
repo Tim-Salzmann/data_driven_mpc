@@ -93,10 +93,12 @@ def main(x_features, u_features, reg_y_dims, model_ground_effect, quad_sim_optio
     mlp_model = mc.nn.MultiLayerPerceptron(input_dims, hidden_size, len(reg_y_dims), hidden_layers, 'Tanh')
     model = NormalizedMLP(mlp_model, torch.tensor(x_mean).float(), torch.tensor(x_std).float(),
                           torch.tensor(y_mean).float(), torch.tensor(y_std).float())
+    print(f"Train Dataset has {len(dataset_train)} points.")
 
     if gp_dataset_val:
         dataset_val = GPToMLPDataset(gp_dataset_val, ground_effect=model_ground_effect)
         data_loader_val = DataLoader(dataset_val, batch_size=10*batch_size, shuffle=False, num_workers=0)
+        print(f"Val Dataset has {len(dataset_val)} points.")
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters.")
 
@@ -137,9 +139,10 @@ def main(x_features, u_features, reg_y_dims, model_ground_effect, quad_sim_optio
                     loss = torch.square(y - y_pred)
 
                     losses_val.append(loss.numpy())
+        train_loss_info = np.mean(losses)
         loss_info = np.mean(np.vstack(losses_val)) if losses_val else np.mean(losses)
         loss_infos.append(loss_info)
-        p_bar.set_description(f"Loss {loss_info:.6f}")
+        p_bar.set_description(f'Train Loss: {train_loss_info}, Val Loss {loss_info:.6f}')
         p_bar.refresh()
 
     save_dict = {

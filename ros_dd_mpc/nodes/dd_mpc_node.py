@@ -139,6 +139,8 @@ class DDMPCWrapper:
                                       torch.tensor(np.zeros((saved_dict['output_size'],))).float())
                 model.load_state_dict(saved_dict['state_dict'])
                 model.eval()
+                if 'gpu' in model_type:
+                    model = model.to('cuda:0')
                 pre_trained_models = model
 
                 mlp_conf = {'approximated': False, 'v_inp': True, 'u_inp': False, 'ground_map_input': False,

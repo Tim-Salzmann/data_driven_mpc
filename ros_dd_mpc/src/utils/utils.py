@@ -98,7 +98,7 @@ def get_data_dir_and_file(ds_name, training_split, params, read_only=False):
     if ds_name in d and os.path.exists(os.path.join(rec_file_dir, ds_name, split)):
         dataset_instances = []
         for (_, _, file_names) in os.walk(os.path.join(rec_file_dir, ds_name, split)):
-            dataset_instances.extend([os.path.splitext(file)[0] for file in file_names])
+            dataset_instances.extend([os.path.splitext(file)[0] for file in file_names if not file.startswith('.')])
     else:
         if read_only:
             return None
