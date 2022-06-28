@@ -57,13 +57,13 @@ class ModelFitConfig:
     """
 
     # Dataset loading ## #
-    ds_name = "simplified_sim_dataset"
-    ds_metadata = {
-        "noisy": True,
-        "drag": True,
-        "payload": False,
-        "motor_noise": True
-    }
+    # ds_name = "simplified_sim_dataset"
+    # ds_metadata = {
+    #     "noisy": True,
+    #     "drag": True,
+    #     "payload": False,
+    #     "motor_noise": True
+    # }
 
     # ds_name = "agisim_dataset"
     # ds_metadata = {
@@ -74,6 +74,11 @@ class ModelFitConfig:
     # ds_metadata = {
     #     "arena": "default",
     # }
+
+    ds_name = "neurobem_dataset"
+    ds_metadata = {
+        "arena": "default",
+    }
 
     # ## Visualization ## #
     # Training mode
