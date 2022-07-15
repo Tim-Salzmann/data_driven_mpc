@@ -377,6 +377,8 @@ class DDMPCWrapper:
             w_opt, x_opt = self.dd_mpc.optimize(model_data)
             next_control = self.create_command_msg(w_opt, x_opt)
             self.optimization_dt += time.time() - tic
+            if time.time() - tic > 0.01:
+                print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             self.control_pub.publish(next_control)
 
@@ -595,7 +597,7 @@ class DDMPCWrapper:
             x_ref[0][2] = min(0.1, self.x[2] + dz) if dz > 0 else max(0.1, self.x[2] + dz)
 
             # Check if z position is close to target.
-            if abs(self.x[2] - 0.6) < 0.05:
+            if abs(self.x[2] - 0.1) < 0.05:
                 executed_x_ref = self.x_ref
                 executed_u_ref = self.u_ref
                 executed_t_ref = self.t_ref
