@@ -48,6 +48,7 @@ def odometry_parse(odom_msg):
 
     return p, q, v, w
 
+
 def state_parse(state_msg):
     p = [state_msg.pose.position.x, state_msg.pose.position.y, state_msg.pose.position.z]
     q = [state_msg.pose.orientation.w, state_msg.pose.orientation.x, state_msg.pose.orientation.y,
@@ -70,10 +71,10 @@ def make_raw_optitrack_dict():
 
 def make_state_record_dict(state_dim):
     blank_state_recording_dict = {
-            "state_in": np.zeros((0, state_dim)),
-            "state_ref": np.zeros((0, state_dim)),
-            "input_in": np.zeros((0, 4)),
-            "timestamp": np.zeros((0, 1)),
+        "state_in": np.zeros((0, state_dim)),
+        "state_ref": np.zeros((0, state_dim)),
+        "input_in": np.zeros((0, 4)),
+        "timestamp": np.zeros((0, 1)),
     }
     return blank_state_recording_dict
 
@@ -132,7 +133,8 @@ class DDMPCWrapper:
                     mlp_model = QuadResidualModel(saved_dict['hidden_size'], saved_dict['hidden_layers'])
                 else:
                     mlp_model = mc.nn.MultiLayerPerceptron(saved_dict['input_size'], saved_dict['hidden_size'],
-                                                   saved_dict['output_size'], saved_dict['hidden_layers'], 'Tanh')
+                                                           saved_dict['output_size'], saved_dict['hidden_layers'],
+                                                           'Tanh')
                 model = NormalizedMLP(mlp_model, torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                       torch.tensor(np.zeros((saved_dict['input_size'],))).float(),
                                       torch.tensor(np.zeros((saved_dict['output_size'],))).float(),
@@ -381,6 +383,8 @@ class DDMPCWrapper:
                 print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             self.control_pub.publish(next_control)
+            print("Cmd pub time: %.5f" % rospy.get_rostime().to_sec())
+            print("Delta from cmd fun: %.5f" % (rospy.get_rostime().to_sec() - odom.header.stamp.to_sec()))
 
             if self.x_initial_reached and self.current_idx < self.w_control.shape[0]:
                 self.w_control[self.current_idx, 0] = next_control.bodyrates.x
@@ -417,7 +421,8 @@ class DDMPCWrapper:
             self.rec_dict["state_in"] = np.append(self.rec_dict["state_in"], np.array(self.x)[np.newaxis, :], 0)
             self.rec_dict["timestamp"] = np.append(self.rec_dict["timestamp"], odom.header.stamp.to_time())
             if self.current_idx < self.x_ref.shape[0]:
-                self.rec_dict["state_ref"] = np.append(self.rec_dict["state_ref"], self.x_ref[np.newaxis, self.current_idx, :], 0)
+                self.rec_dict["state_ref"] = np.append(self.rec_dict["state_ref"],
+                                                       self.x_ref[np.newaxis, self.current_idx, :], 0)
             self.recording_warmup = False
 
     def reference_callback(self, msg):
@@ -471,6 +476,8 @@ class DDMPCWrapper:
         :param msg: message from subscriber.
         :type msg: Odometry
         """
+        print("Odom stamp: %.5f" % msg.header.stamp.to_sec())
+        print("Odom delay: %.5f" % (rospy.get_rostime().to_sec() - msg.header.stamp.to_sec()))
         if self.controller_off:
             return
         p, q, v, w = odometry_parse(msg)
@@ -543,6 +550,7 @@ class DDMPCWrapper:
 
         def _thread_func():
             self.run_mpc(msg)
+
         self.mpc_thread = threading.Thread(target=_thread_func(), args=(), daemon=True)
         self.mpc_thread.start()
 
@@ -575,7 +583,7 @@ class DDMPCWrapper:
 
     def set_reference(self):
 
-        if self.environment == "gazebo" or self.environment== "agisim":
+        if self.environment == "gazebo" or self.environment == "agisim":
             th = 0.1
         else:
             th = 0.5
@@ -643,7 +651,8 @@ class DDMPCWrapper:
                 for traj_id, traj_type in enumerate(self.metadata_dict.keys()):
                     for model_id, model_type in enumerate(self.metadata_dict[traj_type].keys()):
                         for vel_id, vel in enumerate(self.metadata_dict[traj_type][model_type].keys()):
-                            self.mse_exp[traj_id, vel_id, model_id, 0] = self.metadata_dict[traj_type][model_type][vel][0]
+                            self.mse_exp[traj_id, vel_id, model_id, 0] = self.metadata_dict[traj_type][model_type][vel][
+                                0]
                             self.t_opt[traj_id, vel_id, model_id] = self.optimization_dt
                             self.mse_exp_v_max[traj_id, vel_id] = vel
 

@@ -77,7 +77,7 @@ class ReferenceGenerator:
 
         rate = rospy.Rate(0.2)
         while not rospy.is_shutdown():
-
+            # continue
             if not self.gp_mpc_busy and mode == "hover":
                 rospy.loginfo("Sending hover-in-place command")
                 msg = ReferenceTrajectory()
