@@ -655,8 +655,13 @@ class DDMPCWrapper:
                 if self.plot:
                     with_gp = ' + GP ' if self.pre_trained_models is not None else ' - GP '
                     tit = r'$v_{max}$=%.2f m/s | RMSE: %.4f | %s ' % (v_max, float(rmse), with_gp)
-                    trajectory_tracking_results(executed_t_ref, executed_x_ref, self.quad_trajectory, executed_u_ref,
-                                                self.quad_controls, w_control=self.w_control, title=tit)
+                    trajectory_tracking_results(np.delete(executed_t_ref, self.skipped_idx, axis=0),
+                                                np.delete(executed_x_ref, self.skipped_idx, axis=0),
+                                                np.delete(self.quad_trajectory, self.skipped_idx, axis=0),
+                                                np.delete(executed_u_ref, self.skipped_idx, axis=0),
+                                                np.delete(self.quad_controls, self.skipped_idx, axis=0),
+                                                w_control=np.delete(self.w_control, self.skipped_idx, axis=0), title=tit)
+                    rospy.loginfo('Saved Plot!')
 
                 # Stop landing. Quad is close to ground level
                 self.landing = False

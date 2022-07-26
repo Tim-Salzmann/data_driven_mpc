@@ -537,7 +537,13 @@ def trajectory_tracking_results(t_ref, x_ref, x_executed, u_ref, u_executed, tit
             tit = 'Control %d' % (i + 1)
             ax[i].set_title(tit)
             ax[i].legend()
-    plt.show()
+
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    img_save_dir = dir_path + '/../../results/images/'
+    safe_mkdir_recursive(img_save_dir, overwrite=False)
+    fig.savefig(img_save_dir + 'mse_exp', dpi=None, facecolor='w', edgecolor='w',
+                orientation='portrait',
+                transparent=False, pad_inches=0.1)
 
 
 def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, legends, y_labels, t_opt=None,
@@ -593,9 +599,8 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     except:
         pass
     fig.savefig(img_save_dir + 'mse', dpi=None, facecolor='w', edgecolor='w',
-                orientation='portrait', papertype=None, format=None,
-                transparent=False, bbox_inches=None, pad_inches=0.1,
-                frameon=None, metadata=None)
+                orientation='portrait',
+                transparent=False, pad_inches=0.1)
 
     if t_opt is None:
         return
@@ -616,9 +621,8 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     except:
         pass
     fig.savefig(img_save_dir + 't_opt', dpi=None, facecolor='w', edgecolor='w',
-                orientation='portrait', papertype=None, format=None,
-                transparent=False, bbox_inches=None, pad_inches=0.1,
-                frameon=None, metadata=None)
+                orientation='portrait',
+                transparent=False, bbox_inches=None, pad_inches=0.1)
 
 
 def load_past_experiments():
