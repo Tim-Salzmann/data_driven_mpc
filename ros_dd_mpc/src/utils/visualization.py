@@ -586,7 +586,7 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
 
     legend_cols = len(train_samples_vec)
     fig.legend(loc="upper center", fancybox=True, borderaxespad=0.05, ncol=legend_cols, mode="expand",
-               title_fontsize=font_size, fontsize=font_size - 4)
+               fontsize=font_size - 4)
     plt.tight_layout(h_pad=1.4)
     plt.subplots_adjust(top=0.7 + 0.05 * variants_dim)
 
@@ -612,7 +612,7 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     for i, n_train in enumerate(train_samples_vec):
         plt.plot(v[ind_v], t_opt.reshape(t_opt.shape[0] * t_opt.shape[1], -1)[ind_v, i], label=legends[i])
     fig.legend(loc="upper center", fancybox=True, borderaxespad=0.05, ncol=legend_cols, mode="expand",
-               title_fontsize=font_size, fontsize=font_size)
+               fontsize=font_size)
     plt.ylabel('Mean MPC loop time (s)', fontsize=font_size)
     plt.xlabel('Max vel [m/s]', fontsize=font_size)
 
