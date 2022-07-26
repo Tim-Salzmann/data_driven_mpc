@@ -126,7 +126,7 @@ class DDMPCWrapper:
                 import ml_casadi.torch as mc
                 from src.model_fitting.mlp_common import NormalizedMLP, QuadResidualModel
                 directory, file_name = get_model_dir_and_file(load_options)
-                saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"))
+                saved_dict = torch.load(os.path.join(directory, f"{file_name}.pt"), map_location="cpu")
                 model_type = load_options['model_type']
                 if '_qres' in model_type:
                     mlp_model = QuadResidualModel(saved_dict['hidden_size'], saved_dict['hidden_layers'])
@@ -578,7 +578,7 @@ class DDMPCWrapper:
         if self.environment == "gazebo" or self.environment== "agisim":
             th = 0.1
         else:
-            th = 0.5
+            th = 0.1
         mask = [1] * 9 + [0] * 3
 
         x_ref = self.last_x_ref
