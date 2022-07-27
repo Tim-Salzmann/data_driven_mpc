@@ -207,6 +207,7 @@ class DDMPCWrapper:
 
         # To measure optimization elapsed time
         self.optimization_dt = 0
+        self.optimization_steps = 0
 
         # Thread for MPC optimization
         self.mpc_thread = threading.Thread()
@@ -377,6 +378,7 @@ class DDMPCWrapper:
             w_opt, x_opt = self.dd_mpc.optimize(model_data)
             next_control = self.create_command_msg(w_opt, x_opt)
             self.optimization_dt += time.time() - tic
+            self.optimization_steps += 1
             if time.time() - tic > 0.01:
                 print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
             # print("MPC thread. Seq: %d. Topt: %.4f" % (odom.header.seq, (time.time() - tic) * 1000))
@@ -578,7 +580,7 @@ class DDMPCWrapper:
         if self.environment == "gazebo" or self.environment== "agisim":
             th = 0.1
         else:
-            th = 0.1
+            th = 0.2
         mask = [1] * 9 + [0] * 3
 
         x_ref = self.last_x_ref
@@ -616,7 +618,7 @@ class DDMPCWrapper:
                                     np.delete(executed_x_ref[:, :3], self.skipped_idx, axis=0),
                                     np.delete(executed_t_ref, self.skipped_idx, axis=0),
                                     np.delete(self.quad_trajectory[:, :3], self.skipped_idx, axis=0))
-                self.optimization_dt /= self.current_idx
+                self.optimization_dt /= self.optimization_steps
 
                 if self.ref_traj_name in self.metadata_dict.keys():
                     if self.model_name in self.metadata_dict[self.ref_traj_name].keys():
